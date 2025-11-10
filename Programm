@@ -1,0 +1,289 @@
+import requests
+from statistics import mean
+
+# ==============================
+# Konfiguration
+# ==============================
+
+API_KEY = "6d573990b2msh822ed6c5f779a06p1668b7jsn815d65ff7c46"  # <- HIER deinen RapidAPI-Key eintragen
+API_HOST = "booking-com15.p.rapidapi.com"  # DataCrawler Booking.com API Host
+BASE_URL = f"https://{API_HOST}"
+
+HEADERS = {
+    "x-rapidapi-key": API_KEY,
+    "x-rapidapi-host": API_HOST,
+}
+
+# Reisekategorien und Städte
+CATEGORIES = {
+    "1": {
+        "name": "Erholung und Genuss",
+        "cities": ["Barcelona", "Baden-Baden", "Monaco", "Dubrovnik"],
+    },
+    "2": {
+        "name": "Aktiv und Abenteuer",
+        "cities": ["Innsbruck", "Amsterdam", "Lagos", "Chamonix", "Reykjavik"],
+    },
+    "3": {
+        "name": "Kultur und Bildung",
+        "cities": ["Rom", "Wien", "Santiago de Compostela", "Athen", "Edinburgh"],
+    },
+    "4": {
+        "name": "Kulinarik und Lifestyle",
+        "cities": ["Bordeaux", "Istanbul", "Mailand"],
+    },
+    "5": {
+        "name": "Natur und Nachhaltigkeit",
+        "cities": ["Ljubljana", "Siena", "Tromso"],
+    },
+}
+
+# Erlaubte Abflughäfen
+VALID_ORIGINS = {
+    "1": "München",
+    "2": "Frankfurt",
+    "3": "Hamburg",
+}
+
+
+# ==============================
+# Hilfsfunktionen: Hotels
+# ==============================
+
+def get_dest_id(city: str, locale: str = "de-de") -> str:
+    """Holt die dest_id für eine Stadt über den Endpoint searchDestination"""
+    url = f"{BASE_URL}/api/v1/hotels/searchDestination"
+    params = {"query": city, "locale": locale}
+
+    resp = requests.get(url, headers=HEADERS, params=params)
+    resp.raise_for_status()
+    data = resp.json()
+
+    for item in data.get("data", []):
+        if item.get("search_type") == "city":
+            return item["dest_id"]
+
+    raise ValueError(f"Keine dest_id für Stadt '{city}' gefunden.")
+
+
+def search_hotels(city: str, checkin: str, checkout: str,
+                  currency: str = "EUR", max_results: int = 20):
+    """Sucht Hotels in einer Stadt und gibt Liste [{name, price}, ...] zurück"""
+    dest_id = get_dest_id(city)
+
+    url = f"{BASE_URL}/api/v1/hotels/searchHotels"
+    params = {
+        "dest_id": dest_id,
+        "search_type": "CITY",
+        "arrival_date": checkin,
+        "departure_date": checkout,
+        "adults": "2",
+        "room_qty": "1",
+        "languagecode": "de-de",
+        "currency_code": currency,
+        "page_number": "1",
+    }
+
+    resp = requests.get(url, headers=HEADERS, params=params)
+    resp.raise_for_status()
+    data = resp.json()
+
+    hotels_raw = data.get("data", {}).get("hotels", [])
+    hotels = []
+
+    for h in hotels_raw:
+        prop = h.get("property", {})
+        name = prop.get("name")
+        price = (
+            prop.get("priceBreakdown", {})
+            .get("grossPrice", {})
+            .get("value")
+        )
+        if name and isinstance(price, (int, float)):
+            hotels.append({"name": name, "price": float(price)})
+
+    hotels.sort(key=lambda x: x["price"])
+    return hotels[:max_results]
+
+
+# ==============================
+# Hilfsfunktionen: Flüge
+# ==============================
+
+def get_flight_location_id(query: str, locale: str = "de-de") -> str:
+    """Holt die Location-ID (CITY oder AIRPORT) für Flüge"""
+    url = f"{BASE_URL}/api/v1/flights/searchFlightLocation"
+    params = {"query": query, "locale": locale}
+
+    resp = requests.get(url, headers=HEADERS, params=params)
+    resp.raise_for_status()
+    data = resp.json()
+
+    for item in data.get("data", []):
+        if item.get("type") in ("CITY", "AIRPORT"):
+            return item["id"]
+
+    raise ValueError(f"Keine Flight-Location-ID für '{query}' gefunden.")
+
+
+def search_flights(from_city: str, to_city: str,
+                   depart_date: str, return_date: str | None,
+                   currency: str = "EUR", max_results: int = 10):
+    """Sucht Flüge (Hin- und ggf. Rückflug)"""
+    from_id = get_flight_location_id(from_city)
+    to_id = get_flight_location_id(to_city)
+
+    url = f"{BASE_URL}/api/v1/flights/searchFlights"
+    params = {
+        "fromId": from_id,
+        "toId": to_id,
+        "departDate": depart_date,
+        "adults": "1",
+        "currency_code": currency,
+        "sort": "CHEAPEST",
+        "pageNo": 1,
+    }
+    if return_date:
+        params["returnDate"] = return_date
+
+    resp = requests.get(url, headers=HEADERS, params=params)
+    resp.raise_for_status()
+    data = resp.json()
+
+    flights_raw = data.get("data", {}).get("flights", [])
+    flights = []
+
+    for f in flights_raw:
+        price_obj = f.get("price", {})
+        val = (
+            price_obj.get("totalAmount")
+            or price_obj.get("total")
+            or price_obj.get("amount")
+        )
+        if isinstance(val, (int, float)):
+            flights.append({"price": float(val)})
+
+    flights.sort(key=lambda x: x["price"])
+    return flights[:max_results]
+
+
+# ==============================
+# Logik: Kombination Flug + Hotel
+# ==============================
+
+def find_best_combination_for_city(origin_city: str,
+                                   dest_city: str,
+                                   start_date: str,
+                                   end_date: str,
+                                   budget: float,
+                                   currency: str = "EUR"):
+    """Findet die günstigste Kombination aus Flug + Hotel innerhalb des Budgets"""
+    print(f"\n🔍 Prüfe Stadt: {dest_city} ...")
+
+    try:
+        flights = search_flights(origin_city, dest_city, start_date, end_date, currency)
+        hotels = search_hotels(dest_city, start_date, end_date, currency)
+    except Exception as e:
+        print(f"  ⚠️ Fehler bei API-Abfrage für {dest_city}: {e}")
+        return None
+
+    if not flights or not hotels:
+        print("  ⚠️ Keine Flüge oder Hotels gefunden.")
+        return None
+
+    best = None
+    for f in flights:
+        for h in hotels:
+            total = f["price"] + h["price"]
+            if total <= budget:
+                if best is None or total < best["total"]:
+                    best = {
+                        "city": dest_city,
+                        "flight_price": f["price"],
+                        "hotel_name": h["name"],
+                        "hotel_price": h["price"],
+                        "total": total,
+                    }
+
+    if best:
+        print(f"  ✅ Kombination gefunden: {best['hotel_name']} + Flug (~{best['total']:.2f} €)")
+    else:
+        print(f"  ❌ Keine Kombination innerhalb von {budget:.2f} € gefunden.")
+
+    return best
+
+
+# ==============================
+# Interaktiver Teil
+# ==============================
+
+def main():
+    print("🛫 Reiseplaner mit Booking.com (DataCrawler) API\n")
+
+    # Budget
+    while True:
+        try:
+            budget_str = input("Bitte gib dein Gesamtbudget in EUR ein: ")
+            budget = float(budget_str.replace(",", "."))
+            break
+        except ValueError:
+            print("Bitte eine gültige Zahl eingeben, z.B. 800 oder 800.50")
+
+    # Reisezeitraum
+    start_date = input("Bitte gib dein Anreisedatum ein (YYYY-MM-DD): ").strip()
+    end_date = input("Bitte gib dein Abreisedatum ein (YYYY-MM-DD): ").strip()
+
+    # Abflugstadt-Auswahl
+    print("\nWähle deinen Abflughafen:")
+    for key, city in VALID_ORIGINS.items():
+        print(f"  {key}: {city}")
+
+    while True:
+        choice = input("Deine Auswahl (1-3): ").strip()
+        if choice in VALID_ORIGINS:
+            origin_city = VALID_ORIGINS[choice]
+            break
+        else:
+            print("Bitte 1, 2 oder 3 eingeben.")
+
+    # Kategorie auswählen
+    print("\nBitte wähle eine Reisekategorie:")
+    for key, info in CATEGORIES.items():
+        print(f"  {key}: {info['name']} (Ziele: {', '.join(info['cities'])})")
+
+    while True:
+        cat_choice = input("Deine Auswahl (1-5): ").strip()
+        if cat_choice in CATEGORIES:
+            category = CATEGORIES[cat_choice]
+            break
+        else:
+            print("Bitte eine gültige Zahl zwischen 1 und 5 eingeben.")
+
+    print(f"\n➡️ Du reist ab: {origin_city}")
+    print(f"➡️ Kategorie: {category['name']}")
+    print(f"➡️ Budget: {budget:.2f} €, Zeitraum: {start_date} → {end_date}\n")
+
+    results = []
+    for city in category["cities"]:
+        combo = find_best_combination_for_city(origin_city, city, start_date, end_date, budget)
+        if combo:
+            results.append(combo)
+
+    print("\n==============================")
+    print("📋 Ergebnisse:")
+    print("==============================\n")
+
+    if not results:
+        print("Leider wurde keine passende Kombination gefunden.")
+        return
+
+    results.sort(key=lambda x: x["total"])
+    for r in results:
+        print(f"🏙️  {r['city']}")
+        print(f"   ✈️ Flug: {r['flight_price']:.2f} €")
+        print(f"   🏨 Hotel: {r['hotel_name']} — {r['hotel_price']:.2f} €")
+        print(f"   💰 Gesamt: {r['total']:.2f} €\n")
+
+
+if __name__ == "__main__":
+    main()
