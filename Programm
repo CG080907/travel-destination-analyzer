@@ -1,13 +1,13 @@
 import http.client
 
-conn = http.client.HTTPSConnection("maptoolkit.p.rapidapi.com")
+conn = http.client.HTTPSConnection("maptiles.p.rapidapi.com")
 
 headers = {
     'x-rapidapi-key': "6d573990b2msh822ed6c5f779a06p1668b7jsn815d65ff7c46",
-    'x-rapidapi-host': "maptoolkit.p.rapidapi.com"
+    'x-rapidapi-host': "maptiles.p.rapidapi.com"
 }
 
-conn.request("GET", "/staticmap?center=48.20835%2C16.3725&zoom=11&size=640x480&maptype=toursprung-terrain&format=png", headers=headers)
+conn.request("GET", "/en/map/v1/3/6/3.png", headers=headers)
 
 res = conn.getresponse()
 data = res.read()
