@@ -7,7 +7,7 @@ headers = {
     'x-rapidapi-host': "maptoolkit.p.rapidapi.com"
 }
 
-conn.request("GET", "/tiles/1/1/1/terrainrgb.webp", headers=headers)
+conn.request("GET", "/staticmap?center=48.20835%2C16.3725&zoom=11&size=640x480&maptype=toursprung-terrain&format=png", headers=headers)
 
 res = conn.getresponse()
 data = res.read()
