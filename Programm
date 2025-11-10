@@ -1,8 +1,49 @@
+from flask import Flask, request, render_template_string
+import requests
+from typing import Dict, Any, List, Optional
+
+# ============================================================
+# KONFIGURATION
+# ============================================================
+
+API_KEY = "DEIN_RAPIDAPI_KEY_HIER"  # <-- HIER deinen RapidAPI-Key eintragen!
+API_HOST = "booking-com15.p.rapidapi.com"
+BASE_URL = f"https://{API_HOST}"
+
+# Reisekategorien und Städte (deine Vorgabe)
+CATEGORIES = {
+    "Erholung und Genuss": [
+        "Barcelona", "Baden-Baden", "Monaco", "Dubrovnik"
+    ],
+    "Aktiv und Abenteuer": [
+        "Innsbruck", "Amsterdam", "Lagos", "Chamonix", "Reykjavik"
+    ],
+    "Kultur und Bildung": [
+        "Rom", "Wien", "Santiago de Compostela", "Athen", "Edinburgh"
+    ],
+    "Kulinarik und Lifestyle": [
+        "Bordeaux", "Istanbul", "Mailand"
+    ],
+    "Natur und Nachhaltigkeit": [
+        "Ljubljana", "Siena", "Tromso"
+    ],
+}
+
+# Erlaubte Abflughäfen
+ORIGINS = ["München", "Frankfurt", "Hamburg"]
+
+app = Flask(__name__)
+
+# ============================================================
+# HTML-TEMPLATE (direkt im Python-Code)
+# ============================================================
+
+HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="de">
 <head>
   <meta charset="UTF-8" />
-  <title>Reiseplaner – Flug & Hotel</title>
+  <title>Reiseplaner – Flug &amp; Hotel</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
     :root {
@@ -16,11 +57,7 @@
       --radius-lg: 18px;
       --shadow-soft: 0 18px 45px rgba(15, 23, 42, 0.8);
     }
-
-    * {
-      box-sizing: border-box;
-    }
-
+    * { box-sizing: border-box; }
     body {
       margin: 0;
       font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text",
@@ -33,7 +70,6 @@
       justify-content: center;
       padding: 32px 16px;
     }
-
     .shell {
       width: 100%;
       max-width: 1200px;
@@ -45,23 +81,17 @@
       display: grid;
       grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.3fr);
     }
-
     @media (max-width: 900px) {
-      .shell {
-        grid-template-columns: 1fr;
-      }
+      .shell { grid-template-columns: 1fr; }
     }
-
     .left {
       padding: 28px 32px 32px;
       border-right: 1px solid rgba(148, 163, 184, 0.18);
     }
-
     .right {
       padding: 28px 32px 32px;
       background: radial-gradient(circle at top left, #0b1120, #020617 60%);
     }
-
     .badge {
       display: inline-flex;
       align-items: center;
@@ -76,7 +106,6 @@
       color: var(--muted);
       margin-bottom: 10px;
     }
-
     .badge span.icon {
       width: 18px;
       height: 18px;
@@ -87,36 +116,23 @@
       color: var(--accent);
       font-size: 11px;
     }
-
     h1 {
       font-size: 28px;
       margin: 0 0 8px;
       letter-spacing: -0.03em;
     }
-
     .subtitle {
       font-size: 14px;
       color: var(--muted);
       margin-bottom: 24px;
     }
-
-    form {
-      display: grid;
-      gap: 16px;
-    }
-
-    .field-group {
-      display: grid;
-      gap: 4px;
-    }
-
+    form { display: grid; gap: 16px; }
+    .field-group { display: grid; gap: 4px; }
     label {
       font-size: 13px;
       color: var(--muted);
     }
-
-    input,
-    select {
+    input, select {
       width: 100%;
       padding: 9px 11px;
       border-radius: 999px;
@@ -128,21 +144,17 @@
       transition: border-color 0.18s ease, box-shadow 0.18s ease,
         background 0.18s ease, transform 0.05s ease;
     }
-
-    input:focus,
-    select:focus {
+    input:focus, select:focus {
       border-color: var(--accent);
       box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.3);
       background: rgba(15, 23, 42, 0.95);
       transform: translateY(-0.5px);
     }
-
     .row {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 12px;
     }
-
     .btn-primary {
       margin-top: 8px;
       width: 100%;
@@ -161,23 +173,17 @@
       box-shadow: 0 10px 30px rgba(34, 197, 94, 0.45);
       transition: transform 0.08s ease, box-shadow 0.08s ease, filter 0.05s ease;
     }
-
     .btn-primary:hover {
       transform: translateY(-1px);
       filter: brightness(1.05);
       box-shadow: 0 14px 40px rgba(34, 197, 94, 0.6);
     }
-
-    .btn-primary span.icon {
-      font-size: 17px;
-    }
-
+    .btn-primary span.icon { font-size: 17px; }
     .hint {
       margin-top: 10px;
       font-size: 12px;
       color: var(--muted);
     }
-
     .results-header {
       display: flex;
       align-items: center;
@@ -185,7 +191,6 @@
       gap: 12px;
       margin-bottom: 18px;
     }
-
     .results-header-title {
       font-size: 16px;
       font-weight: 600;
@@ -193,7 +198,6 @@
       text-transform: uppercase;
       color: var(--muted);
     }
-
     .chip {
       padding: 4px 10px;
       border-radius: 999px;
@@ -203,7 +207,6 @@
       border: 1px solid rgba(148, 163, 184, 0.5);
       color: var(--muted);
     }
-
     .highlight-card {
       border-radius: var(--radius-lg);
       padding: 14px 16px;
@@ -212,7 +215,6 @@
       box-shadow: 0 15px 35px rgba(15, 23, 42, 0.9);
       margin-bottom: 18px;
     }
-
     .highlight-heading {
       font-size: 13px;
       text-transform: uppercase;
@@ -220,7 +222,6 @@
       color: var(--muted);
       margin-bottom: 6px;
     }
-
     .highlight-main {
       display: flex;
       align-items: baseline;
@@ -228,35 +229,27 @@
       gap: 8px;
       margin-bottom: 6px;
     }
-
     .highlight-city {
       font-size: 20px;
       font-weight: 600;
     }
-
     .highlight-price {
       font-size: 18px;
       font-weight: 600;
       color: var(--accent);
     }
-
     .highlight-meta {
       font-size: 12px;
       color: var(--muted);
     }
-
     .cards {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 12px;
     }
-
     @media (max-width: 900px) {
-      .cards {
-        grid-template-columns: 1fr;
-      }
+      .cards { grid-template-columns: 1fr; }
     }
-
     .card {
       border-radius: var(--radius-lg);
       padding: 12px 13px;
@@ -266,54 +259,45 @@
       flex-direction: column;
       gap: 6px;
     }
-
     .card-header {
       display: flex;
       justify-content: space-between;
       align-items: baseline;
       gap: 6px;
     }
-
     .card-city {
       font-size: 15px;
       font-weight: 600;
     }
-
     .card-error {
       font-size: 13px;
       color: var(--danger);
     }
-
     .card-hotel {
       font-size: 13px;
       color: var(--muted);
     }
-
     .card-prices {
       display: flex;
       justify-content: space-between;
       font-size: 13px;
       margin-top: 4px;
     }
-
     .pill-label {
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: 0.12em;
       color: var(--muted);
     }
-
     .pill-value {
       font-size: 13px;
       font-weight: 500;
     }
-
     .empty-state {
       font-size: 13px;
       color: var(--muted);
       margin-top: 12px;
     }
-
     .error-banner {
       margin-top: 10px;
       padding: 8px 10px;
@@ -469,11 +453,270 @@
       {% endif %}
 
       <div class="error-banner">
-        Diese App ist ein Prototyp. Prüfe Preise und Verfügbarkeiten immer noch
-        einmal direkt bei der Buchung.
+        Diese App ist ein Prototyp. Prüfe Preise und Verfügbarkeiten immer
+        noch einmal direkt bei der Buchung.
       </div>
     </div>
   </div>
 </body>
 </html>
+"""
 
+# ============================================================
+# API-HILFSFUNKTIONEN
+# ============================================================
+
+def headers() -> Dict[str, str]:
+    return {
+        "x-rapidapi-key": API_KEY,
+        "x-rapidapi-host": API_HOST,
+    }
+
+
+def get_dest_id(city: str, locale: str = "de-de") -> str:
+    url = f"{BASE_URL}/api/v1/hotels/searchDestination"
+    params = {"query": city, "locale": locale}
+
+    resp = requests.get(url, headers=headers(), params=params, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+
+    for item in data.get("data", []):
+        if item.get("search_type") == "city":
+            return item["dest_id"]
+
+    raise ValueError(f"Keine dest_id für Stadt '{city}' gefunden.")
+
+
+def search_hotels(
+    city: str,
+    checkin: str,
+    checkout: str,
+    currency: str = "EUR",
+    max_results: int = 20,
+) -> List[Dict[str, Any]]:
+    dest_id = get_dest_id(city)
+
+    url = f"{BASE_URL}/api/v1/hotels/searchHotels"
+    params = {
+        "dest_id": dest_id,
+        "search_type": "CITY",
+        "arrival_date": checkin,
+        "departure_date": checkout,
+        "adults": "2",
+        "room_qty": "1",
+        "languagecode": "de-de",
+        "currency_code": currency,
+        "page_number": "1",
+    }
+
+    resp = requests.get(url, headers=headers(), params=params, timeout=60)
+    resp.raise_for_status()
+    data = resp.json()
+
+    hotels_raw = data.get("data", {}).get("hotels", [])
+    hotels: List[Dict[str, Any]] = []
+
+    for h in hotels_raw:
+        prop = h.get("property", {})
+        name = prop.get("name")
+        price = (
+            prop.get("priceBreakdown", {})
+            .get("grossPrice", {})
+            .get("value")
+        )
+        if name and isinstance(price, (int, float)):
+            hotels.append(
+                {
+                    "name": name,
+                    "price": float(price),
+                    "raw": h,
+                }
+            )
+
+    hotels.sort(key=lambda x: x["price"])
+    return hotels[:max_results]
+
+
+def get_flight_location_id(query: str, locale: str = "de-de") -> str:
+    url = f"{BASE_URL}/api/v1/flights/searchFlightLocation"
+    params = {"query": query, "locale": locale}
+
+    resp = requests.get(url, headers=headers(), params=params, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+
+    for item in data.get("data", []):
+        if item.get("type") in ("CITY", "AIRPORT"):
+            return item["id"]
+
+    raise ValueError(f"Keine Flight-Location-ID für '{query}' gefunden.")
+
+
+def search_flights(
+    from_city: str,
+    to_city: str,
+    depart_date: str,
+    return_date: Optional[str],
+    currency: str = "EUR",
+    max_results: int = 10,
+) -> List[Dict[str, Any]]:
+    from_id = get_flight_location_id(from_city)
+    to_id = get_flight_location_id(to_city)
+
+    url = f"{BASE_URL}/api/v1/flights/searchFlights"
+    params = {
+        "fromId": from_id,
+        "toId": to_id,
+        "departDate": depart_date,
+        "adults": "1",
+        "currency_code": currency,
+        "sort": "CHEAPEST",
+        "pageNo": 1,
+    }
+    if return_date:
+        params["returnDate"] = return_date
+
+    resp = requests.get(url, headers=headers(), params=params, timeout=60)
+    resp.raise_for_status()
+    data = resp.json()
+
+    flights_raw = data.get("data", {}).get("flights", [])
+    flights: List[Dict[str, Any]] = []
+
+    for f in flights_raw:
+        price_obj = f.get("price", {})
+        val = (
+            price_obj.get("totalAmount")
+            or price_obj.get("total")
+            or price_obj.get("amount")
+        )
+        if isinstance(val, (int, float)):
+            flights.append(
+                {
+                    "price": float(val),
+                    "raw": f,
+                }
+            )
+
+    flights.sort(key=lambda x: x["price"])
+    return flights[:max_results]
+
+
+def find_best_combo_for_city(
+    origin_city: str,
+    dest_city: str,
+    start_date: str,
+    end_date: str,
+    budget: float,
+    currency: str = "EUR",
+) -> Optional[Dict[str, Any]]:
+    try:
+        flights = search_flights(
+            from_city=origin_city,
+            to_city=dest_city,
+            depart_date=start_date,
+            return_date=end_date,
+            currency=currency,
+            max_results=5,
+        )
+        hotels = search_hotels(
+            city=dest_city,
+            checkin=start_date,
+            checkout=end_date,
+            currency=currency,
+            max_results=20,
+        )
+    except Exception as e:
+        return {
+            "city": dest_city,
+            "error": str(e),
+        }
+
+    if not flights or not hotels:
+        return {
+            "city": dest_city,
+            "error": "Keine Flüge oder Hotels gefunden.",
+        }
+
+    best: Optional[Dict[str, Any]] = None
+
+    for f in flights:
+        for h in hotels:
+            total = f["price"] + h["price"]
+            if total <= budget:
+                if best is None or total < best["total_price"]:
+                    best = {
+                        "city": dest_city,
+                        "flight_price": f["price"],
+                        "hotel_name": h["name"],
+                        "hotel_price": h["price"],
+                        "total_price": total,
+                    }
+
+    if best is None:
+        return {
+            "city": dest_city,
+            "error": f"Keine Kombination innerhalb von {budget:.2f} € gefunden.",
+        }
+
+    return best
+
+
+# ============================================================
+# ROUTE
+# ============================================================
+
+@app.route("/", methods=["GET", "POST"])
+def index():
+    results: List[Dict[str, Any]] = []
+    best_overall: Optional[Dict[str, Any]] = None
+
+    if request.method == "POST":
+        # Form-Werte lesen
+        budget_raw = request.form.get("budget", "0").replace(",", ".")
+        try:
+            budget = float(budget_raw)
+        except ValueError:
+            budget = 0.0
+
+        start_date = request.form.get("start_date") or ""
+        end_date = request.form.get("end_date") or ""
+        origin_city = request.form.get("origin_city") or ""
+        category_name = request.form.get("category") or ""
+
+        if budget > 0 and start_date and end_date and origin_city and category_name:
+            cities = CATEGORIES.get(category_name, [])
+            for city in cities:
+                combo = find_best_combo_for_city(
+                    origin_city=origin_city,
+                    dest_city=city,
+                    start_date=start_date,
+                    end_date=end_date,
+                    budget=budget,
+                    currency="EUR",
+                )
+                if combo:
+                    results.append(combo)
+
+            valid = [r for r in results if "error" not in r]
+            if valid:
+                valid.sort(key=lambda x: x["total_price"])
+                best_overall = valid[0]
+
+    return render_template_string(
+        HTML_TEMPLATE,
+        categories=list(CATEGORIES.keys()),
+        origins=ORIGINS,
+        results=results,
+        best_overall=best_overall,
+    )
+
+
+# ============================================================
+# START
+# ============================================================
+
+if __name__ == "__main__":
+    # Flask-Server starten
+    app.run(debug=True)
