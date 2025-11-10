@@ -1,289 +1,479 @@
-import requests
-from statistics import mean
-
-# ==============================
-# Konfiguration
-# ==============================
-
-API_KEY = "6d573990b2msh822ed6c5f779a06p1668b7jsn815d65ff7c46"  # <- HIER deinen RapidAPI-Key eintragen
-API_HOST = "booking-com15.p.rapidapi.com"  # DataCrawler Booking.com API Host
-BASE_URL = f"https://{API_HOST}"
-
-HEADERS = {
-    "x-rapidapi-key": API_KEY,
-    "x-rapidapi-host": API_HOST,
-}
-
-# Reisekategorien und Städte
-CATEGORIES = {
-    "1": {
-        "name": "Erholung und Genuss",
-        "cities": ["Barcelona", "Baden-Baden", "Monaco", "Dubrovnik"],
-    },
-    "2": {
-        "name": "Aktiv und Abenteuer",
-        "cities": ["Innsbruck", "Amsterdam", "Lagos", "Chamonix", "Reykjavik"],
-    },
-    "3": {
-        "name": "Kultur und Bildung",
-        "cities": ["Rom", "Wien", "Santiago de Compostela", "Athen", "Edinburgh"],
-    },
-    "4": {
-        "name": "Kulinarik und Lifestyle",
-        "cities": ["Bordeaux", "Istanbul", "Mailand"],
-    },
-    "5": {
-        "name": "Natur und Nachhaltigkeit",
-        "cities": ["Ljubljana", "Siena", "Tromso"],
-    },
-}
-
-# Erlaubte Abflughäfen
-VALID_ORIGINS = {
-    "1": "München",
-    "2": "Frankfurt",
-    "3": "Hamburg",
-}
-
-
-# ==============================
-# Hilfsfunktionen: Hotels
-# ==============================
-
-def get_dest_id(city: str, locale: str = "de-de") -> str:
-    """Holt die dest_id für eine Stadt über den Endpoint searchDestination"""
-    url = f"{BASE_URL}/api/v1/hotels/searchDestination"
-    params = {"query": city, "locale": locale}
-
-    resp = requests.get(url, headers=HEADERS, params=params)
-    resp.raise_for_status()
-    data = resp.json()
-
-    for item in data.get("data", []):
-        if item.get("search_type") == "city":
-            return item["dest_id"]
-
-    raise ValueError(f"Keine dest_id für Stadt '{city}' gefunden.")
-
-
-def search_hotels(city: str, checkin: str, checkout: str,
-                  currency: str = "EUR", max_results: int = 20):
-    """Sucht Hotels in einer Stadt und gibt Liste [{name, price}, ...] zurück"""
-    dest_id = get_dest_id(city)
-
-    url = f"{BASE_URL}/api/v1/hotels/searchHotels"
-    params = {
-        "dest_id": dest_id,
-        "search_type": "CITY",
-        "arrival_date": checkin,
-        "departure_date": checkout,
-        "adults": "2",
-        "room_qty": "1",
-        "languagecode": "de-de",
-        "currency_code": currency,
-        "page_number": "1",
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <title>Reiseplaner – Flug & Hotel</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #020617;
+      --accent: #38bdf8;
+      --accent-soft: rgba(56, 189, 248, 0.15);
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --danger: #f97373;
+      --radius-lg: 18px;
+      --shadow-soft: 0 18px 45px rgba(15, 23, 42, 0.8);
     }
 
-    resp = requests.get(url, headers=HEADERS, params=params)
-    resp.raise_for_status()
-    data = resp.json()
-
-    hotels_raw = data.get("data", {}).get("hotels", [])
-    hotels = []
-
-    for h in hotels_raw:
-        prop = h.get("property", {})
-        name = prop.get("name")
-        price = (
-            prop.get("priceBreakdown", {})
-            .get("grossPrice", {})
-            .get("value")
-        )
-        if name and isinstance(price, (int, float)):
-            hotels.append({"name": name, "price": float(price)})
-
-    hotels.sort(key=lambda x: x["price"])
-    return hotels[:max_results]
-
-
-# ==============================
-# Hilfsfunktionen: Flüge
-# ==============================
-
-def get_flight_location_id(query: str, locale: str = "de-de") -> str:
-    """Holt die Location-ID (CITY oder AIRPORT) für Flüge"""
-    url = f"{BASE_URL}/api/v1/flights/searchFlightLocation"
-    params = {"query": query, "locale": locale}
-
-    resp = requests.get(url, headers=HEADERS, params=params)
-    resp.raise_for_status()
-    data = resp.json()
-
-    for item in data.get("data", []):
-        if item.get("type") in ("CITY", "AIRPORT"):
-            return item["id"]
-
-    raise ValueError(f"Keine Flight-Location-ID für '{query}' gefunden.")
-
-
-def search_flights(from_city: str, to_city: str,
-                   depart_date: str, return_date: str | None,
-                   currency: str = "EUR", max_results: int = 10):
-    """Sucht Flüge (Hin- und ggf. Rückflug)"""
-    from_id = get_flight_location_id(from_city)
-    to_id = get_flight_location_id(to_city)
-
-    url = f"{BASE_URL}/api/v1/flights/searchFlights"
-    params = {
-        "fromId": from_id,
-        "toId": to_id,
-        "departDate": depart_date,
-        "adults": "1",
-        "currency_code": currency,
-        "sort": "CHEAPEST",
-        "pageNo": 1,
+    * {
+      box-sizing: border-box;
     }
-    if return_date:
-        params["returnDate"] = return_date
 
-    resp = requests.get(url, headers=HEADERS, params=params)
-    resp.raise_for_status()
-    data = resp.json()
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text",
+        "Segoe UI", sans-serif;
+      background: radial-gradient(circle at top, #1e293b 0, #020617 55%);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      align-items: stretch;
+      justify-content: center;
+      padding: 32px 16px;
+    }
 
-    flights_raw = data.get("data", {}).get("flights", [])
-    flights = []
+    .shell {
+      width: 100%;
+      max-width: 1200px;
+      background: linear-gradient(135deg, #020617dd, #020617f5);
+      border-radius: 28px;
+      box-shadow: var(--shadow-soft);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      overflow: hidden;
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.3fr);
+    }
 
-    for f in flights_raw:
-        price_obj = f.get("price", {})
-        val = (
-            price_obj.get("totalAmount")
-            or price_obj.get("total")
-            or price_obj.get("amount")
-        )
-        if isinstance(val, (int, float)):
-            flights.append({"price": float(val)})
+    @media (max-width: 900px) {
+      .shell {
+        grid-template-columns: 1fr;
+      }
+    }
 
-    flights.sort(key=lambda x: x["price"])
-    return flights[:max_results]
+    .left {
+      padding: 28px 32px 32px;
+      border-right: 1px solid rgba(148, 163, 184, 0.18);
+    }
 
+    .right {
+      padding: 28px 32px 32px;
+      background: radial-gradient(circle at top left, #0b1120, #020617 60%);
+    }
 
-# ==============================
-# Logik: Kombination Flug + Hotel
-# ==============================
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid rgba(148, 163, 184, 0.4);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
 
-def find_best_combination_for_city(origin_city: str,
-                                   dest_city: str,
-                                   start_date: str,
-                                   end_date: str,
-                                   budget: float,
-                                   currency: str = "EUR"):
-    """Findet die günstigste Kombination aus Flug + Hotel innerhalb des Budgets"""
-    print(f"\n🔍 Prüfe Stadt: {dest_city} ...")
+    .badge span.icon {
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      display: grid;
+      place-items: center;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 11px;
+    }
 
-    try:
-        flights = search_flights(origin_city, dest_city, start_date, end_date, currency)
-        hotels = search_hotels(dest_city, start_date, end_date, currency)
-    except Exception as e:
-        print(f"  ⚠️ Fehler bei API-Abfrage für {dest_city}: {e}")
-        return None
+    h1 {
+      font-size: 28px;
+      margin: 0 0 8px;
+      letter-spacing: -0.03em;
+    }
 
-    if not flights or not hotels:
-        print("  ⚠️ Keine Flüge oder Hotels gefunden.")
-        return None
+    .subtitle {
+      font-size: 14px;
+      color: var(--muted);
+      margin-bottom: 24px;
+    }
 
-    best = None
-    for f in flights:
-        for h in hotels:
-            total = f["price"] + h["price"]
-            if total <= budget:
-                if best is None or total < best["total"]:
-                    best = {
-                        "city": dest_city,
-                        "flight_price": f["price"],
-                        "hotel_name": h["name"],
-                        "hotel_price": h["price"],
-                        "total": total,
-                    }
+    form {
+      display: grid;
+      gap: 16px;
+    }
 
-    if best:
-        print(f"  ✅ Kombination gefunden: {best['hotel_name']} + Flug (~{best['total']:.2f} €)")
-    else:
-        print(f"  ❌ Keine Kombination innerhalb von {budget:.2f} € gefunden.")
+    .field-group {
+      display: grid;
+      gap: 4px;
+    }
 
-    return best
+    label {
+      font-size: 13px;
+      color: var(--muted);
+    }
 
+    input,
+    select {
+      width: 100%;
+      padding: 9px 11px;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.4);
+      background: rgba(15, 23, 42, 0.8);
+      color: var(--text);
+      font-size: 14px;
+      outline: none;
+      transition: border-color 0.18s ease, box-shadow 0.18s ease,
+        background 0.18s ease, transform 0.05s ease;
+    }
 
-# ==============================
-# Interaktiver Teil
-# ==============================
+    input:focus,
+    select:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.3);
+      background: rgba(15, 23, 42, 0.95);
+      transform: translateY(-0.5px);
+    }
 
-def main():
-    print("🛫 Reiseplaner mit Booking.com (DataCrawler) API\n")
+    .row {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
 
-    # Budget
-    while True:
-        try:
-            budget_str = input("Bitte gib dein Gesamtbudget in EUR ein: ")
-            budget = float(budget_str.replace(",", "."))
-            break
-        except ValueError:
-            print("Bitte eine gültige Zahl eingeben, z.B. 800 oder 800.50")
+    .btn-primary {
+      margin-top: 8px;
+      width: 100%;
+      border: none;
+      border-radius: 999px;
+      padding: 11px 16px;
+      font-size: 15px;
+      font-weight: 500;
+      background: linear-gradient(135deg, #38bdf8, #22c55e);
+      color: #0b1120;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      box-shadow: 0 10px 30px rgba(34, 197, 94, 0.45);
+      transition: transform 0.08s ease, box-shadow 0.08s ease, filter 0.05s ease;
+    }
 
-    # Reisezeitraum
-    start_date = input("Bitte gib dein Anreisedatum ein (YYYY-MM-DD): ").strip()
-    end_date = input("Bitte gib dein Abreisedatum ein (YYYY-MM-DD): ").strip()
+    .btn-primary:hover {
+      transform: translateY(-1px);
+      filter: brightness(1.05);
+      box-shadow: 0 14px 40px rgba(34, 197, 94, 0.6);
+    }
 
-    # Abflugstadt-Auswahl
-    print("\nWähle deinen Abflughafen:")
-    for key, city in VALID_ORIGINS.items():
-        print(f"  {key}: {city}")
+    .btn-primary span.icon {
+      font-size: 17px;
+    }
 
-    while True:
-        choice = input("Deine Auswahl (1-3): ").strip()
-        if choice in VALID_ORIGINS:
-            origin_city = VALID_ORIGINS[choice]
-            break
-        else:
-            print("Bitte 1, 2 oder 3 eingeben.")
+    .hint {
+      margin-top: 10px;
+      font-size: 12px;
+      color: var(--muted);
+    }
 
-    # Kategorie auswählen
-    print("\nBitte wähle eine Reisekategorie:")
-    for key, info in CATEGORIES.items():
-        print(f"  {key}: {info['name']} (Ziele: {', '.join(info['cities'])})")
+    .results-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 18px;
+    }
 
-    while True:
-        cat_choice = input("Deine Auswahl (1-5): ").strip()
-        if cat_choice in CATEGORIES:
-            category = CATEGORIES[cat_choice]
-            break
-        else:
-            print("Bitte eine gültige Zahl zwischen 1 und 5 eingeben.")
+    .results-header-title {
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
 
-    print(f"\n➡️ Du reist ab: {origin_city}")
-    print(f"➡️ Kategorie: {category['name']}")
-    print(f"➡️ Budget: {budget:.2f} €, Zeitraum: {start_date} → {end_date}\n")
+    .chip {
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      border: 1px solid rgba(148, 163, 184, 0.5);
+      color: var(--muted);
+    }
 
-    results = []
-    for city in category["cities"]:
-        combo = find_best_combination_for_city(origin_city, city, start_date, end_date, budget)
-        if combo:
-            results.append(combo)
+    .highlight-card {
+      border-radius: var(--radius-lg);
+      padding: 14px 16px;
+      background: radial-gradient(circle at top left, #0b1120, #020617 70%);
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      box-shadow: 0 15px 35px rgba(15, 23, 42, 0.9);
+      margin-bottom: 18px;
+    }
 
-    print("\n==============================")
-    print("📋 Ergebnisse:")
-    print("==============================\n")
+    .highlight-heading {
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
 
-    if not results:
-        print("Leider wurde keine passende Kombination gefunden.")
-        return
+    .highlight-main {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
 
-    results.sort(key=lambda x: x["total"])
-    for r in results:
-        print(f"🏙️  {r['city']}")
-        print(f"   ✈️ Flug: {r['flight_price']:.2f} €")
-        print(f"   🏨 Hotel: {r['hotel_name']} — {r['hotel_price']:.2f} €")
-        print(f"   💰 Gesamt: {r['total']:.2f} €\n")
+    .highlight-city {
+      font-size: 20px;
+      font-weight: 600;
+    }
 
+    .highlight-price {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--accent);
+    }
 
-if __name__ == "__main__":
-    main()
+    .highlight-meta {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    @media (max-width: 900px) {
+      .cards {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .card {
+      border-radius: var(--radius-lg);
+      padding: 12px 13px;
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid rgba(148, 163, 184, 0.3);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 6px;
+    }
+
+    .card-city {
+      font-size: 15px;
+      font-weight: 600;
+    }
+
+    .card-error {
+      font-size: 13px;
+      color: var(--danger);
+    }
+
+    .card-hotel {
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .card-prices {
+      display: flex;
+      justify-content: space-between;
+      font-size: 13px;
+      margin-top: 4px;
+    }
+
+    .pill-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: var(--muted);
+    }
+
+    .pill-value {
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .empty-state {
+      font-size: 13px;
+      color: var(--muted);
+      margin-top: 12px;
+    }
+
+    .error-banner {
+      margin-top: 10px;
+      padding: 8px 10px;
+      border-radius: 999px;
+      background: rgba(248, 113, 113, 0.08);
+      border: 1px solid rgba(248, 113, 113, 0.6);
+      font-size: 12px;
+      color: #fecaca;
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <!-- Linke Seite: Formular -->
+    <div class="left">
+      <div class="badge">
+        <span class="icon">✈️</span>
+        Smart Travel Planner
+      </div>
+      <h1>Deine Reise in einem Klick planen</h1>
+      <p class="subtitle">
+        Wähle Budget, Zeitraum, Abflughafen und Reisekategorie –
+        wir suchen passende Kombinationen aus Flug &amp; Hotel für mehrere Ziele.
+      </p>
+
+      <form method="post">
+        <div class="field-group">
+          <label for="budget">Budget (gesamt, in EUR)</label>
+          <input
+            type="number"
+            step="50"
+            min="100"
+            id="budget"
+            name="budget"
+            placeholder="z.B. 800"
+            required
+          />
+        </div>
+
+        <div class="row">
+          <div class="field-group">
+            <label for="start_date">Anreisedatum</label>
+            <input type="date" id="start_date" name="start_date" required />
+          </div>
+          <div class="field-group">
+            <label for="end_date">Abreisedatum</label>
+            <input type="date" id="end_date" name="end_date" required />
+          </div>
+        </div>
+
+        <div class="field-group">
+          <label for="origin_city">Abflughafen</label>
+          <select id="origin_city" name="origin_city" required>
+            <option value="" disabled selected>Bitte wählen</option>
+            {% for o in origins %}
+              <option value="{{ o }}">{{ o }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="field-group">
+          <label for="category">Reisekategorie</label>
+          <select id="category" name="category" required>
+            <option value="" disabled selected>Bitte auswählen</option>
+            {% for c in categories %}
+              <option value="{{ c }}">{{ c }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <button type="submit" class="btn-primary">
+          <span class="icon">🔍</span>
+          Passende Reisen suchen
+        </button>
+
+        <p class="hint">
+          Hinweis: Es werden Echtzeit-Daten von Booking.com (Hotels &amp; Flüge)
+          über die RapidAPI-Schnittstelle abgefragt. Preise sind Richtwerte.
+        </p>
+      </form>
+    </div>
+
+    <!-- Rechte Seite: Ergebnisse -->
+    <div class="right">
+      <div class="results-header">
+        <div class="results-header-title">Ergebnisse</div>
+        <div class="chip">Flug &amp; Hotel Kombinationen</div>
+      </div>
+
+      {% if not results %}
+        <p class="empty-state">
+          Noch keine Suche gestartet oder keine Ergebnisse vorhanden.<br />
+          Fülle links das Formular aus und klicke auf
+          <strong>„Passende Reisen suchen“</strong>.
+        </p>
+      {% else %}
+
+        {% if best_overall %}
+          <div class="highlight-card">
+            <div class="highlight-heading">Beste Option im Budget</div>
+            <div class="highlight-main">
+              <div class="highlight-city">{{ best_overall.city }}</div>
+              <div class="highlight-price">
+                ~ {{ "%.0f"|format(best_overall.total_price) }} €
+              </div>
+            </div>
+            <div class="highlight-meta">
+              ✈️ Flug: {{ "%.0f"|format(best_overall.flight_price) }} € ·
+              🏨 {{ best_overall.hotel_name }}:
+              {{ "%.0f"|format(best_overall.hotel_price) }} € (Aufenthalt)
+            </div>
+          </div>
+        {% endif %}
+
+        <div class="cards">
+          {% for r in results %}
+            <div class="card">
+              <div class="card-header">
+                <div class="card-city">🏙️ {{ r.city }}</div>
+                {% if r.error %}
+                  <div class="card-error">Keine passende Kombination</div>
+                {% else %}
+                  <div class="card-error" style="color: var(--accent);">
+                    ~ {{ "%.0f"|format(r.total_price) }} €
+                  </div>
+                {% endif %}
+              </div>
+
+              {% if r.error %}
+                <div class="card-error">{{ r.error }}</div>
+              {% else %}
+                <div class="card-hotel">
+                  🏨 <strong>{{ r.hotel_name }}</strong>
+                </div>
+                <div class="card-prices">
+                  <div>
+                    <div class="pill-label">Flug</div>
+                    <div class="pill-value">
+                      {{ "%.0f"|format(r.flight_price) }} €
+                    </div>
+                  </div>
+                  <div>
+                    <div class="pill-label">Hotel (Aufenthalt)</div>
+                    <div class="pill-value">
+                      {{ "%.0f"|format(r.hotel_price) }} €
+                    </div>
+                  </div>
+                </div>
+              {% endif %}
+            </div>
+          {% endfor %}
+        </div>
+      {% endif %}
+
+      <div class="error-banner">
+        Diese App ist ein Prototyp. Prüfe Preise und Verfügbarkeiten immer noch
+        einmal direkt bei der Buchung.
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+
