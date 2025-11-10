@@ -9,3 +9,14 @@ GitHub Collaboration:
 Assign team members to data gathering, forecasting, and GUI development.
 Each member should work on a branch (e.g., weather-analysis, destination-GUI).
 Use code reviews and pull requests to integrate components.
+
+6. Reiseziel-Analyse mit Wetter- und Kostenprognose
+Beschreibung: Entwickeln Sie ein Tool, das Reiseziele hinsichtlich Wettermuster, durchschnittlicher Kosten und optimaler Reisezeiten analysiert.
+Anwendungsfall: Reisende können ihre Reiseziele anhand ihrer Wetter- und Budgetpräferenzen auswählen und so ihre Reisepläne optimieren.
+Python-Anleitung:
+Datenerfassung: Nutzen Sie Wetter-APIs (wie OpenWeatherMap) und Reisedaten von Anbietern wie Skyscanner.
+Algorithmus: Prognostizieren Sie mithilfe von Datenanalysetechniken Kosten und Wettertrends.
+GUI: Erstellen Sie mit Folium und Tkinter eine interaktive Karte und ein Dashboard mit empfohlenen Reisezielen, Kostenprognosen und saisonalen Wettermustern.
+GitHub-Zusammenarbeit: Weisen Sie Teammitgliedern die Aufgaben Datenerfassung, Prognose und GUI-Entwicklung zu. 
+Jedes Mitglied sollte in einem eigenen Branch arbeiten (z. B. Wetteranalyse, Reiseziel-GUI). Nutzen Sie Code-Reviews und Pull Requests, 
+um die Komponenten zu integrieren.
