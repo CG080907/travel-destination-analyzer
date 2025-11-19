@@ -25,18 +25,18 @@ import json, os, ssl, random, math, datetime as dt, csv
 # ----------------------------
 # Konfiguration / Keys
 # ----------------------------
-MAPTOOLKIT_RAPIDAPI_KEY  = os.getenv("MAPTOOLKIT_RAPIDAPI_KEY", "6d573990b2msh822ed6c5f779a06p1668b7jsn815d65ff7c46")
+MAPTOOLKIT_RAPIDAPI_KEY  = os.getenv("MAPTOOLKIT_RAPIDAPI_KEY", "")
 MAPTOOLKIT_RAPIDAPI_HOST = os.getenv("MAPTOOLKIT_RAPIDAPI_HOST", "maptiles.p.rapidapi.com")
 MAPTOOLKIT_RAPIDAPI_PATH_TEMPLATE = os.getenv(
     "MAPTOOLKIT_RAPIDAPI_PATH_TEMPLATE",
     "/en/map/v1/{z}/{x}/{y}.png"
 )
 
-BOOKING_RAPIDAPI_KEY  = os.getenv("BOOKING_RAPIDAPI_KEY", "6d573990b2msh822ed6c5f779a06p1668b7jsn815d65ff7c46")
+BOOKING_RAPIDAPI_KEY  = os.getenv("BOOKING_RAPIDAPI_KEY", "")
 BOOKING_RAPIDAPI_HOST = os.getenv("BOOKING_RAPIDAPI_HOST", "")
 
 # Optional: Google AI Studio (Gemini)
-GOOGLE_AI_STUDIO_API_KEY = os.getenv("GOOGLE_AI_STUDIO_API_KEY", "AIzaSyAz0Z31k-NHDOtd7kF4qWB4_UGhBFasee4")
+GOOGLE_AI_STUDIO_API_KEY = os.getenv("GOOGLE_AI_STUDIO_API_KEY", "")
 GOOGLE_AI_STUDIO_MODEL = os.getenv("GOOGLE_AI_STUDIO_MODEL", "gemini-2.5-flash")
 
 # Pfade
