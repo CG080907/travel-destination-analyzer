@@ -1,0 +1,1654 @@
+# filename: travel_webapp_mapbox_api.py
+# Start:  python travel_webapp_mapbox_api.py
+# Browser: http://127.0.0.1:8000
+#
+# Single-file Web-App (nur Standardbibliothek)
+# Karten: MapLibre GL JS + MapToolKit (RapidAPI) ODER OSM-Fallback (keine Keys)
+# APIs: Booking (RapidAPI), Google AI Studio (Gemini 2.5 Flash oder Fallback),
+#       Map-Tiles
+#
+# Wetter: lokale Datei climate_weekly.csv
+#   Spalten mindestens:
+#     location, week, avg_temp_max_c, avg_temp_min_c
+#   empfohlen:
+#     avg_rain_mm_per_day, weather_description_de, weather_description_en
+#
+# FX: lokale Datei KursExport.csv
+#   enthält ISO-Währungscode + Kurs (Spalten z.B. ISO / Code, Kurs / Rate)
+
+from __future__ import annotations
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, urlencode, quote_plus
+from urllib import request, error
+import json, os, ssl, random, math, datetime as dt, csv
+
+# ----------------------------
+# Konfiguration / Keys
+# ----------------------------
+MAPTOOLKIT_RAPIDAPI_KEY  = os.getenv("MAPTOOLKIT_RAPIDAPI_KEY", "6d573990b2msh822ed6c5f779a06p1668b7jsn815d65ff7c46")
+MAPTOOLKIT_RAPIDAPI_HOST = os.getenv("MAPTOOLKIT_RAPIDAPI_HOST", "maptiles.p.rapidapi.com")
+MAPTOOLKIT_RAPIDAPI_PATH_TEMPLATE = os.getenv(
+    "MAPTOOLKIT_RAPIDAPI_PATH_TEMPLATE",
+    "/en/map/v1/{z}/{x}/{y}.png"
+)
+
+BOOKING_RAPIDAPI_KEY  = os.getenv("BOOKING_RAPIDAPI_KEY", "6d573990b2msh822ed6c5f779a06p1668b7jsn815d65ff7c46")
+BOOKING_RAPIDAPI_HOST = os.getenv("BOOKING_RAPIDAPI_HOST", "")
+
+# Optional: Google AI Studio (Gemini)
+GOOGLE_AI_STUDIO_API_KEY = os.getenv("GOOGLE_AI_STUDIO_API_KEY", "AIzaSyAz0Z31k-NHDOtd7kF4qWB4_UGhBFasee4")
+GOOGLE_AI_STUDIO_MODEL = os.getenv("GOOGLE_AI_STUDIO_MODEL", "gemini-2.5-flash")
+
+# Pfade
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CLIMATE_CSV_PATH = os.getenv("CLIMATE_CSV_PATH", os.path.join(BASE_DIR, "climate_weekly.csv"))
+FX_CSV_PATH = os.getenv("FX_CSV_PATH", os.path.join(BASE_DIR, "KursExport.csv"))
+
+SSL_CTX = ssl.create_default_context()
+
+# ----------------------------
+# Stammdaten – Reiseziele
+# ----------------------------
+def city_key(full: str) -> str:
+    return full.split(",")[0].strip()
+
+DESTINATIONS = [
+    # ---------- Strandurlaub ----------
+    {"name":"Mallorca, ES",            "lat":39.6953, "lon":3.0176,   "avg_cost_per_day":130, "tags":["strand","familie","party","wellness","natur"], "country":"ES"},
+    {"name":"Ibiza, ES",               "lat":38.9067, "lon":1.4206,   "avg_cost_per_day":160, "tags":["strand","party","city"], "country":"ES"},
+    {"name":"Menorca, ES",             "lat":39.9496, "lon":4.1100,   "avg_cost_per_day":120, "tags":["strand","familie","wellness"], "country":"ES"},
+    {"name":"Costa del Sol, ES",       "lat":36.7213, "lon":-4.4213,  "avg_cost_per_day":120, "tags":["strand","familie","city"], "country":"ES"},
+    {"name":"Algarve, PT",             "lat":37.0194, "lon":-7.9304,  "avg_cost_per_day":110, "tags":["strand","familie","wellness","natur"], "country":"PT"},
+    {"name":"Madeira, PT",             "lat":32.6669, "lon":-16.9241, "avg_cost_per_day":130, "tags":["natur","outdoor","wellness"], "country":"PT"},
+    {"name":"Azoren, PT",              "lat":37.7412, "lon":-25.6756, "avg_cost_per_day":120, "tags":["natur","outdoor"], "country":"PT"},
+    {"name":"Sardinien, IT",           "lat":39.2238, "lon":9.1217,   "avg_cost_per_day":150, "tags":["strand","natur","wellness"], "country":"IT"},
+    {"name":"Sizilien, IT",            "lat":38.1157, "lon":13.3615,  "avg_cost_per_day":130, "tags":["strand","kultur","natur"], "country":"IT"},
+    {"name":"Amalfiküste, IT",         "lat":40.6340, "lon":14.6020,  "avg_cost_per_day":180, "tags":["strand","kultur","wellness"], "country":"IT"},
+    {"name":"Kreta, GR",               "lat":35.3387, "lon":25.1442,  "avg_cost_per_day":110, "tags":["strand","outdoor","familie"], "country":"GR"},
+    {"name":"Rhodos, GR",              "lat":36.4343, "lon":28.2176,  "avg_cost_per_day":110, "tags":["strand","familie","kultur"], "country":"GR"},
+    {"name":"Mykonos, GR",             "lat":37.4467, "lon":25.3289,  "avg_cost_per_day":180, "tags":["strand","party"], "country":"GR"},
+    {"name":"Santorini, GR",           "lat":36.3932, "lon":25.4615,  "avg_cost_per_day":180, "tags":["strand","kultur","wellness"], "country":"GR"},
+    {"name":"Dubrovnik Riviera, HR",   "lat":42.6507, "lon":18.0944,  "avg_cost_per_day":140, "tags":["strand","kultur","natur"], "country":"HR"},
+
+    # ---------- Citytrip ----------
+    {"name":"Paris, FR",               "lat":48.8566, "lon":2.3522,   "avg_cost_per_day":190, "tags":["city","kultur"], "country":"FR"},
+    {"name":"London, GB",              "lat":51.5074, "lon":-0.1278,  "avg_cost_per_day":200, "tags":["city","kultur","party"], "country":"GB"},
+    {"name":"Berlin, DE",              "lat":52.5200, "lon":13.4050,  "avg_cost_per_day":130, "tags":["city","party"], "country":"DE"},
+    {"name":"Rom, IT",                 "lat":41.9028, "lon":12.4964,  "avg_cost_per_day":160, "tags":["city","kultur"], "country":"IT"},
+    {"name":"Wien, AT",                "lat":48.2082, "lon":16.3738,  "avg_cost_per_day":160, "tags":["city","kultur"], "country":"AT"},
+    {"name":"Prag, CZ",                "lat":50.0755, "lon":14.4378,  "avg_cost_per_day":110, "tags":["city","kultur","party"], "country":"CZ"},
+    {"name":"Budapest, HU",            "lat":47.4979, "lon":19.0402,  "avg_cost_per_day":100, "tags":["city","party","wellness"], "country":"HU"},
+    {"name":"Amsterdam, NL",           "lat":52.3676, "lon":4.9041,   "avg_cost_per_day":180, "tags":["city","party"], "country":"NL"},
+    {"name":"Lissabon, PT",            "lat":38.7223, "lon":-9.1393,  "avg_cost_per_day":130, "tags":["city","strand","kultur"], "country":"PT"},
+    {"name":"Barcelona, ES",           "lat":41.3851, "lon":2.1734,   "avg_cost_per_day":150, "tags":["city","strand","party"], "country":"ES"},
+    {"name":"Madrid, ES",              "lat":40.4168, "lon":-3.7038,  "avg_cost_per_day":140, "tags":["city","kultur"], "country":"ES"},
+    {"name":"Kopenhagen, DK",          "lat":55.6761, "lon":12.5683,  "avg_cost_per_day":200, "tags":["city","familie"], "country":"DK"},
+    {"name":"Stockholm, SE",           "lat":59.3293, "lon":18.0686,  "avg_cost_per_day":190, "tags":["city","natur"], "country":"SE"},
+    {"name":"Dublin, IE",              "lat":53.3498, "lon":-6.2603,  "avg_cost_per_day":170, "tags":["city","party"], "country":"IE"},
+    {"name":"Istanbul, TR",            "lat":41.0082, "lon":28.9784,  "avg_cost_per_day":90,  "tags":["city","kultur"], "country":"TR"},
+
+    # ---------- Skifahren ----------
+    {"name":"Zermatt, CH",             "lat":46.0207, "lon":7.7491,   "avg_cost_per_day":220, "tags":["ski","outdoor","natur"], "country":"CH"},
+    {"name":"Verbier, CH",             "lat":46.1000, "lon":7.2330,   "avg_cost_per_day":230, "tags":["ski","outdoor","natur"], "country":"CH"},
+    {"name":"St. Moritz, CH",          "lat":46.4900, "lon":9.8350,   "avg_cost_per_day":240, "tags":["ski","outdoor","natur","wellness"], "country":"CH"},
+    {"name":"Innsbruck, AT",           "lat":47.2692, "lon":11.4041,  "avg_cost_per_day":170, "tags":["ski","city","outdoor"], "country":"AT"},
+    {"name":"Sölden, AT",              "lat":46.9700, "lon":10.9830,  "avg_cost_per_day":180, "tags":["ski","outdoor","natur"], "country":"AT"},
+    {"name":"Kitzbühel, AT",           "lat":47.4460, "lon":12.3920,  "avg_cost_per_day":190, "tags":["ski","outdoor","natur"], "country":"AT"},
+    {"name":"Garmisch-Partenkirchen, DE","lat":47.4940,"lon":11.0960, "avg_cost_per_day":170, "tags":["ski","outdoor","natur"], "country":"DE"},
+    {"name":"Dolomiti Superski, IT",   "lat":46.5500, "lon":11.7600,  "avg_cost_per_day":190, "tags":["ski","outdoor","natur"], "country":"IT"},
+    {"name":"Chamonix, FR",            "lat":45.9237, "lon":6.8694,   "avg_cost_per_day":190, "tags":["ski","outdoor","natur"], "country":"FR"},
+    {"name":"Courchevel, FR",          "lat":45.4140, "lon":6.6320,   "avg_cost_per_day":220, "tags":["ski","outdoor","natur","luxus"], "country":"FR"},
+
+    # ---------- Familienurlaub ----------
+    {"name":"Gardasee, IT",            "lat":45.6000, "lon":10.7000,  "avg_cost_per_day":140, "tags":["familie","natur","outdoor","strand"], "country":"IT"},
+    {"name":"Toskana, IT",             "lat":43.7711, "lon":11.2486,  "avg_cost_per_day":150, "tags":["familie","kultur","natur"], "country":"IT"},
+    {"name":"Cinque Terre, IT",        "lat":44.1200, "lon":9.7100,   "avg_cost_per_day":160, "tags":["familie","strand","outdoor","kultur"], "country":"IT"},
+    {"name":"Valencia, ES",            "lat":39.4699, "lon":-0.3763,  "avg_cost_per_day":130, "tags":["familie","city","strand"], "country":"ES"},
+    {"name":"Kanaren, ES",             "lat":28.3000, "lon":-16.6000, "avg_cost_per_day":130, "tags":["familie","strand","natur"], "country":"ES"},
+    {"name":"Bretagne, FR",            "lat":48.4000, "lon":-4.5000,  "avg_cost_per_day":130, "tags":["familie","strand","natur"], "country":"FR"},
+    {"name":"Provence, FR",            "lat":43.9300, "lon":4.8200,   "avg_cost_per_day":150, "tags":["familie","natur","kultur","wellness"], "country":"FR"},
+    {"name":"Luzern, CH",              "lat":47.0500, "lon":8.3100,   "avg_cost_per_day":200, "tags":["familie","natur","city"], "country":"CH"},
+    {"name":"Schwarzwald, DE",         "lat":48.3000, "lon":8.2000,   "avg_cost_per_day":120, "tags":["familie","natur","outdoor"], "country":"DE"},
+    {"name":"Ostseeinseln, DE",        "lat":54.4000, "lon":13.4000,  "avg_cost_per_day":110, "tags":["familie","strand","natur"], "country":"DE"},
+    {"name":"Cornwall, GB",            "lat":50.4000, "lon":-4.7000,  "avg_cost_per_day":150, "tags":["familie","strand","natur"], "country":"GB"},
+
+    # ---------- Wandern & Outdoor ----------
+    {"name":"Lofoten, NO",             "lat":68.3000, "lon":14.7000,  "avg_cost_per_day":170, "tags":["natur","outdoor"], "country":"NO"},
+    {"name":"Geirangerfjord, NO",      "lat":62.1000, "lon":7.2000,   "avg_cost_per_day":160, "tags":["natur","outdoor"], "country":"NO"},
+    {"name":"Dolomiten, IT",           "lat":46.4000, "lon":11.8000,  "avg_cost_per_day":160, "tags":["natur","outdoor","ski"], "country":"IT"},
+    {"name":"Interlaken, CH",          "lat":46.6863, "lon":7.8632,   "avg_cost_per_day":190, "tags":["natur","outdoor","abenteuer"], "country":"CH"},
+    {"name":"Island – Golden Circle, IS", "lat":64.2500,"lon":-21.0000,"avg_cost_per_day":190,"tags":["natur","outdoor"], "country":"IS"},
+    {"name":"Plitvicer Seen, HR",      "lat":44.8800, "lon":15.6200,  "avg_cost_per_day":130, "tags":["natur","outdoor"], "country":"HR"},
+    {"name":"Bled, SI",                "lat":46.3700, "lon":14.1100,  "avg_cost_per_day":130, "tags":["natur","outdoor"], "country":"SI"},
+
+    # ---------- Naturreisen ----------
+    {"name":"Island – Blaue Lagune, IS","lat":63.8800,"lon":-22.4400, "avg_cost_per_day":200, "tags":["natur","outdoor","wellness"], "country":"IS"},
+    {"name":"Lake District, GB",       "lat":54.5000, "lon":-3.0000,  "avg_cost_per_day":150, "tags":["natur","outdoor"], "country":"GB"},
+    {"name":"Sächsische Schweiz, DE",  "lat":50.9200, "lon":14.1500,  "avg_cost_per_day":120, "tags":["natur","outdoor"], "country":"DE"},
+    {"name":"Fjordnorwegen, NO",       "lat":61.0000, "lon":7.0000,   "avg_cost_per_day":170, "tags":["natur","outdoor"], "country":"NO"},
+    {"name":"Lappland, FI",            "lat":67.9000, "lon":20.5000,  "avg_cost_per_day":160, "tags":["natur","outdoor","winter"], "country":"FI"},
+    {"name":"Highlands, GB",           "lat":57.1000, "lon":-4.7000,  "avg_cost_per_day":150, "tags":["natur","outdoor"], "country":"GB"},
+    {"name":"Durmitor Nationalpark, ME","lat":43.1300,"lon":19.0000,  "avg_cost_per_day":110, "tags":["natur","outdoor"], "country":"ME"},
+
+    # ---------- Entspannung & Wellness ----------
+    {"name":"Côte d’Azur, FR",         "lat":43.5500, "lon":7.0200,   "avg_cost_per_day":190, "tags":["strand","wellness","kultur"], "country":"FR"},
+    {"name":"Südtirol, IT",            "lat":46.5000, "lon":11.3500,  "avg_cost_per_day":170, "tags":["natur","wellness","outdoor"], "country":"IT"},
+    {"name":"Therme Erding, DE",       "lat":48.3000, "lon":11.9000,  "avg_cost_per_day":140, "tags":["wellness","familie"], "country":"DE"},
+    {"name":"Züricher See, CH",        "lat":47.2600, "lon":8.6800,   "avg_cost_per_day":200, "tags":["wellness","natur","city"], "country":"CH"},
+    {"name":"Thermen Slowenien, SI",   "lat":46.6500, "lon":16.2000,  "avg_cost_per_day":110, "tags":["wellness","familie"], "country":"SI"},
+
+    # ---------- Sightseeing & Kultur ----------
+    {"name":"Athen, GR",               "lat":37.9838, "lon":23.7275,  "avg_cost_per_day":130, "tags":["city","kultur"], "country":"GR"},
+    {"name":"Granada, ES",             "lat":37.1773, "lon":-3.5986,  "avg_cost_per_day":120, "tags":["city","kultur"], "country":"ES"},
+    {"name":"Sevilla, ES",             "lat":37.3891, "lon":-5.9845,  "avg_cost_per_day":130, "tags":["city","kultur"], "country":"ES"},
+    {"name":"Edinburgh, GB",           "lat":55.9533, "lon":-3.1883,  "avg_cost_per_day":170, "tags":["city","kultur"], "country":"GB"},
+    {"name":"Krakau, PL",              "lat":50.0647, "lon":19.9450,  "avg_cost_per_day":100, "tags":["city","kultur"], "country":"PL"},
+    {"name":"Brügge, BE",              "lat":51.2093, "lon":3.2247,   "avg_cost_per_day":150, "tags":["city","kultur"], "country":"BE"},
+]
+
+TRIP_PROFILES = {
+    "familie":  ["familie","strand","city"],
+    "strand":   ["strand"],
+    "outdoor":  ["outdoor","natur"],
+    "city":     ["city","kultur"],
+    "ski":      ["ski"],
+    "natur":    ["natur","outdoor"],
+    "wellness": ["wellness"],
+    "kultur":   ["kultur","city"],
+    "party":    ["party","city"],
+}
+
+HAZARDS = {
+    "FR":[
+        {"risk":"Taschendiebstahl an Hotspots (Paris, Riviera)","season":"Ganzjährig, v. a. Hochsaison","advice":"Wertsachen nah am Körper; in Metro & Sehenswürdigkeiten aufmerksam."},
+        {"risk":"Sommerhitze & UV (Juni–Aug)","season":"Sommer","advice":"Schattenpausen, Wasser, Sonnenschutz."},
+    ],
+    "DE":[{"risk":"Zecken in Wald-/Wiesenregionen","season":"Apr–Okt","advice":"Repellent, geschlossene Kleidung; nach Touren absuchen."}],
+    "ES":[
+        {"risk":"Sonne/Hitze (Südküsten, Balearen)","season":"Mai–Sep","advice":"Hydration & Sonnenschutz; Mittagsstunden meiden."},
+        {"risk":"Taschendiebstahl (Barcelona, Madrid, Küstenorte)","season":"Ganzjährig","advice":"Taschen geschlossen tragen; Menschenmengen beachten."},
+    ],
+    "IT":[{"risk":"Taschendiebstahl (Rom, Neapel, Mailand)","season":"Ganzjährig","advice":"Seriöse Anbieter; Achtung vor Trickbetrug."}],
+    "PT":[{"risk":"Atlantikbrandung an Stränden","season":"Ganzjährig","advice":"Flaggen beachten; nur bewachte Strände."}],
+    "GR":[{"risk":"Sonne/Hitze auf Inseln","season":"Sommer","advice":"Sonnenschutz, Wasser, Mittagsruhe beachten."}],
+    "NL":[{"risk":"Fahrradverkehr in Städten","season":"Ganzjährig","advice":"Auf Radwege achten; rechts/links schauen."}],
+    "AT":[{"risk":"Alpinrisiken (Wetterwechsel)","season":"Frühjahr–Herbst","advice":"Wetter prüfen; passende Ausrüstung."}],
+    "CZ":[{"risk":"Taschendiebstahl (Altstadt Prag)","season":"Hauptsaison","advice":"Wertsachen sichern; Bars/Wechselstuben prüfen."}],
+    "CH":[{"risk":"Alpinwetter & UV","season":"Sommer/Winter","advice":"Zwiebellook, Sonnenschutz, Gewitterwarnungen."}],
+    "IS":[{"risk":"Raues Wetter, rutschige Küsten","season":"Ganzjährig","advice":"Warnhinweise beachten; sichere Wege."}],
+    "DK":[{"risk":"Fahrradverkehr (Kopenhagen)","season":"Ganzjährig","advice":"Auf Radwege achten; klare Handzeichen."}],
+    "HU":[{"risk":"Thermen – Dehydrierung möglich","season":"Ganzjährig","advice":"Genug trinken; Zeit in heißen Becken begrenzen."}],
+    "HR":[{"risk":"Seeigel/Quallen (Adria)","season":"Sommer","advice":"Badeschuhe; lokale Hinweise beachten."}],
+    "GB":[{"risk":"Wechselhaftes Wetter, Regen","season":"Ganzjährig","advice":"Regenkleidung; rutschige Wege beachten."}],
+    "IE":[{"risk":"Starke Winde & Regen an der Küste","season":"Herbst/Winter","advice":"Klippenabsperrungen beachten; rutschfeste Schuhe."}],
+    "TR":[{"risk":"Starker Verkehr in Metropolen","season":"Ganzjährig","advice":"Ampeln/Überwege nutzen; Hupen nicht erschrecken lassen."}],
+    "SE":[{"risk":"Winterglätte & Dunkelheit","season":"Winter","advice":"Reflektoren; rutschfeste Schuhe; Straßenquerungen gut planen."}],
+    "PL":[{"risk":"Glatteis im Winter","season":"Winter","advice":"Rutschfeste Schuhe, vorsichtig gehen."}],
+    "BE":[{"risk":"Pflastersteine bei Nässe rutschig","season":"Herbst/Winter","advice":"Feste Schuhe, aufpassen in Altstädten."}],
+    "FI":[{"risk":"Extreme Kälte in Lappland","season":"Winter","advice":"Mehrschichtige Kleidung, Gesicht/Extremitäten schützen."}],
+    "ME":[{"risk":"Alpine Pfade in Durmitor","season":"Sommer","advice":"Nur markierte Wege, Wetter prüfen."}],
+    "NO":[{"risk":"Schneller Wetterwechsel in Fjorden/Bergen","season":"Frühjahr–Herbst","advice":"Zwiebellook, Notfallausrüstung bei Wanderungen."}],
+}
+
+# Land -> Deutscher Name (für Auswärtiges Amt Suche)
+COUNTRY_NAME_DE = {
+    "DE":"Deutschland",
+    "FR":"Frankreich",
+    "ES":"Spanien",
+    "PT":"Portugal",
+    "IT":"Italien",
+    "GR":"Griechenland",
+    "HR":"Kroatien",
+    "TR":"Türkei",
+    "NL":"Niederlande",
+    "AT":"Österreich",
+    "CZ":"Tschechien",
+    "CH":"Schweiz",
+    "IS":"Island",
+    "DK":"Dänemark",
+    "HU":"Ungarn",
+    "GB":"Vereinigtes Königreich",
+    "IE":"Irland",
+    "SE":"Schweden",
+    "PL":"Polen",
+    "BE":"Belgien",
+    "FI":"Finnland",
+    "ME":"Montenegro",
+    "NO":"Norwegen",
+    "SI":"Slowenien",
+    "DK":"Dänemark",
+}
+
+AIRPORTS = [
+    {"code":"FRA","name":"Frankfurt Airport","lat":50.05,"lon":8.57},
+    {"code":"MUC","name":"Munich Airport","lat":48.3538,"lon":11.7861},
+    {"code":"BER","name":"Berlin Brandenburg","lat":52.3667,"lon":13.5033},
+    {"code":"HAM","name":"Hamburg Airport","lat":53.632,"lon":9.993},
+    {"code":"DUS","name":"Düsseldorf Airport","lat":51.2895,"lon":6.7668},
+    {"code":"CGN","name":"Köln/Bonn","lat":50.8659,"lon":7.1427},
+    {"code":"STR","name":"Stuttgart","lat":48.6899,"lon":9.2219},
+    {"code":"ZRH","name":"Zürich","lat":47.4581,"lon":8.5555},
+    {"code":"VIE","name":"Wien","lat":48.1103,"lon":16.5697},
+    {"code":"AMS","name":"Amsterdam Schiphol","lat":52.3086,"lon":4.7639},
+    {"code":"CDG","name":"Paris CDG","lat":49.0097,"lon":2.5479},
+    {"code":"MAD","name":"Madrid Barajas","lat":40.4722,"lon":-3.5608},
+    {"code":"BCN","name":"Barcelona El Prat","lat":41.2974,"lon":2.0833},
+    {"code":"ROM","name":"Rome Area","lat":41.8003,"lon":12.2389},
+]
+TRAIN_HUBS = [
+    {"name":"Berlin Hbf","lat":52.5251,"lon":13.3694},
+    {"name":"München Hbf","lat":48.1402,"lon":11.5586},
+    {"name":"Frankfurt (Main) Hbf","lat":50.1071,"lon":8.6638},
+    {"name":"Köln Hbf","lat":50.9429,"lon":6.9581},
+    {"name":"Hamburg Hbf","lat":53.5526,"lon":10.0067},
+    {"name":"Stuttgart Hbf","lat":48.783,"lon":9.182},
+    {"name":"Wien Hbf","lat":48.1857,"lon":16.3740},
+    {"name":"Zürich HB","lat":47.3782,"lon":8.5402},
+    {"name":"Paris Gare de l’Est","lat":48.8761,"lon":2.3589},
+]
+
+# Bekannte Startorte (Fallback), aber NICHT mehr zwingend
+ORIGIN_POINTS = {
+    "berlin":            (52.5200, 13.4050, "Berlin"),
+    "berlin, de":        (52.5200, 13.4050, "Berlin"),
+    "hamburg":           (53.5511, 9.9937,  "Hamburg"),
+    "münchen":           (48.1374, 11.5755, "München"),
+    "munich":            (48.1374, 11.5755, "Munich"),
+    "frankfurt":         (50.1109, 8.6821,  "Frankfurt am Main"),
+    "köln":              (50.9375, 6.9603,  "Köln"),
+    "cologne":           (50.9375, 6.9603,  "Cologne"),
+    "düsseldorf":        (51.2277, 6.7735,  "Düsseldorf"),
+    "stuttgart":         (48.7758, 9.1829,  "Stuttgart"),
+    "wien":              (48.2082, 16.3738, "Wien"),
+    "vienna":            (48.2082, 16.3738, "Vienna"),
+    "zürich":            (47.3769, 8.5417,  "Zürich"),
+    "zurich":            (47.3769, 8.5417,  "Zurich"),
+    "paris":             (48.8566, 2.3522,  "Paris"),
+    "amsterdam":         (52.3676, 4.9041,  "Amsterdam"),
+    "london":            (51.5074, -0.1278, "London"),
+    "madrid":            (40.4168, -3.7038, "Madrid"),
+    "barcelona":         (41.3851, 2.1734,  "Barcelona"),
+    "rom":               (41.9028, 12.4964, "Rom"),
+    "rome":              (41.9028, 12.4964, "Rome"),
+    "lisbon":            (38.7223, -9.1393, "Lisbon"),
+    "lissabon":          (38.7223, -9.1393, "Lissabon"),
+}
+
+# ----------------------------
+# Klima-Daten aus climate_weekly.csv
+# ----------------------------
+# CLIMATE = {location: {week:int -> {"tmax":float,"tmin":float,"rain":float,"wdesc_de":str,"wdesc_en":str}}}
+CLIMATE: dict[str, dict[int, dict]] = {}
+
+def load_climate_weekly(path: str) -> None:
+    """Lädt Wochenklima aus CSV, inkl. DE/EN-Beschreibungen."""
+    global CLIMATE
+    CLIMATE = {}
+    try:
+        with open(path, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                loc = (row.get("location") or "").strip()
+                if not loc:
+                    continue
+                try:
+                    week = int(row.get("week", "0") or 0)
+                    tmax = float(row.get("avg_temp_max_c", "0").replace(",", ".") or 0.0)
+                    tmin = float(row.get("avg_temp_min_c", "0").replace(",", ".") or 0.0)
+                    rain = float((row.get("avg_rain_mm_per_day") or "0").replace(",", ".") or 0.0)
+                except ValueError:
+                    continue
+                if week <= 0 or week > 53:
+                    continue
+
+                wdesc_de = (
+                    row.get("weather_description_de") or
+                    row.get("weather_de") or
+                    row.get("wetter_de") or
+                    row.get("weather_description") or
+                    ""
+                )
+                wdesc_en = (
+                    row.get("weather_description_en") or
+                    row.get("weather_en") or
+                    row.get("wetter_en") or
+                    ""
+                )
+
+                CLIMATE.setdefault(loc, {})[week] = {
+                    "tmax": tmax, "tmin": tmin, "rain": rain,
+                    "wdesc_de": wdesc_de.strip(),
+                    "wdesc_en": wdesc_en.strip(),
+                }
+        if not CLIMATE:
+            print("⚠️  climate_weekly.csv geladen, aber keine Daten erkannt.")
+        else:
+            print(f"✅ Klima-Daten geladen – {len(CLIMATE)} Orte")
+    except FileNotFoundError:
+        print(f"⚠️  climate_weekly.csv nicht gefunden unter: {path}")
+    except Exception as e:
+        print(f"⚠️  Fehler beim Laden von climate_weekly.csv: {e}")
+
+def _classify_weather(wdesc: str, rain: float) -> str:
+    """Grobe Kategorie: Clear / Clouds / Rain / Snow / Storm / Info."""
+    wl = (wdesc or "").lower()
+    if any(k in wl for k in ("gewitter", "sturm", "storm", "thunder")):
+        return "Storm"
+    if any(k in wl for k in ("schnee", "snow", "eis", "glätte", "ice")):
+        return "Snow"
+    if any(k in wl for k in ("regen", "regner", "rain", "schauer", "drizzle")):
+        return "Rain"
+    if any(k in wl for k in ("bewölkt", "wolken", "cloud", "overcast")):
+        return "Clouds"
+    if any(k in wl for k in ("sonnig", "heiter", "klar", "sunny", "clear")):
+        return "Clear"
+    # Fallback auf Regenmenge
+    if rain <= 1.0:
+        return "Clear"
+    elif rain <= 2.5:
+        return "Clouds"
+    else:
+        return "Rain"
+
+def _simple_en_from_de(wdesc_de: str) -> str:
+    """Sehr einfache Notfall-Übersetzung, falls CSV keine EN-Spalte hat."""
+    if not wdesc_de:
+        return ""
+    wl = wdesc_de.lower()
+    if "bewölkt" in wl or "wolken" in wl:
+        return "mostly cloudy"
+    if "sonnig" in wl or "heiter" in wl or "klar" in wl:
+        return "mostly sunny"
+    if "regen" in wl or "schauer" in wl:
+        return "rainy / showers"
+    if "schnee" in wl:
+        return "snowy"
+    if "gewitter" in wl or "sturm" in wl:
+        return "storms / thunderstorms"
+    return wdesc_de  # notfalls einfach DE-Text
+
+def seasonal_temp_and_condition(name: str, checkin: str | None) -> tuple[float, str, str, str]:
+    """
+    Liefert (durchschnittliche Temperatur, Wetter-Kategorie, Text_DE, Text_EN).
+    Kategorie: Clear/Clouds/Rain/...
+    Texte: direkt aus CSV bzw. einfache Fallback-Übersetzung.
+    """
+    loc = city_key(name)
+
+    if checkin:
+        try:
+            ref_date = dt.date.fromisoformat(checkin)
+        except Exception:
+            ref_date = dt.date.today()
+    else:
+        ref_date = dt.date.today()
+    week = ref_date.isocalendar()[1]
+
+    data_loc = CLIMATE.get(loc)
+    entry = None
+    if data_loc:
+        if week in data_loc:
+            entry = data_loc[week]
+        else:
+            weeks = sorted(data_loc.keys())
+            if weeks:
+                closest = min(weeks, key=lambda w: abs(w - week))
+                entry = data_loc[closest]
+
+    if entry is not None:
+        tmax = float(entry.get("tmax", 0.0) or 0.0)
+        tmin = float(entry.get("tmin", 0.0) or 0.0)
+        rain = float(entry.get("rain", 0.0) or 0.0)
+        tavg = (tmax + tmin) / 2.0
+
+        wdesc_de = (entry.get("wdesc_de") or "").strip()
+        wdesc_en = (entry.get("wdesc_en") or "").strip()
+        if not wdesc_de and entry.get("wdesc"):
+            wdesc_de = str(entry.get("wdesc")).strip()
+        if not wdesc_en and wdesc_de:
+            wdesc_en = _simple_en_from_de(wdesc_de)
+
+        cond_cat = _classify_weather(wdesc_de or wdesc_en, rain)
+        if not wdesc_de:
+            wdesc_de = "Keine Wetterdaten"
+        if not wdesc_en:
+            wdesc_en = wdesc_de
+
+        return float(round(tavg, 1)), cond_cat, wdesc_de, wdesc_en
+
+    # Fallback, wenn Ort nicht in der CSV ist
+    m = ref_date.month
+    if m in (6, 7, 8):
+        base = 24.0
+        cond_cat = "Clear"
+        de = "überwiegend sonnig"
+        en = "mostly sunny"
+    elif m in (12, 1, 2):
+        base = 5.0
+        cond_cat = "Clouds"
+        de = "eher kühl und bewölkt"
+        en = "rather cool and cloudy"
+    elif m in (4, 5, 9, 10):
+        base = 15.0
+        cond_cat = "Clouds"
+        de = "wechselnd bewölkt"
+        en = "partly cloudy"
+    else:
+        base = 10.0
+        cond_cat = "Clouds"
+        de = "gemischt, eher kühl"
+        en = "mixed, rather cool"
+
+    return float(round(base, 1)), cond_cat, de, en
+
+# ----------------------------
+# Utils
+# ----------------------------
+def http_get_json(url: str, headers: dict | None = None) -> dict:
+    req = request.Request(url, headers=headers or {"User-Agent":"travel-webapp/1.0"})
+    with request.urlopen(req, context=SSL_CTX, timeout=30) as resp:
+        return json.loads(resp.read().decode("utf-8") or "{}")
+
+def http_post_json(url: str, body: dict, headers: dict | None = None) -> dict:
+    data = json.dumps(body).encode("utf-8")
+    hdrs = {"Content-Type":"application/json"}
+    if headers:
+        hdrs.update(headers)
+    req = request.Request(url, data=data, headers=hdrs)
+    with request.urlopen(req, context=SSL_CTX, timeout=30) as resp:
+        return json.loads(resp.read().decode("utf-8") or "{}")
+
+def nights_between(checkin: str, checkout: str, default_nights: int = 5) -> int:
+    try:
+        if not checkin or not checkout:
+            return default_nights
+        d1 = dt.date.fromisoformat(checkin); d2 = dt.date.fromisoformat(checkout)
+        return max(1, (d2 - d1).days)
+    except Exception:
+        return default_nights
+
+# neues, strengeres Scoring
+def score_base(seasonal: float, cond_cat: str, ppd: float, tmin: float, tmax: float, budget: float) -> float:
+    """
+    Temperatur, Wetter, und Budget-Ziel fließen strenger ein.
+    - Temperaturabweichung: pro °C Abweichung vom Mittel deutliche Abzüge
+    - Außerhalb des Wunschbereiches extra Strafe
+    - Budget: stark penalisiert, wenn deutlich über Budget
+    """
+    s = 100.0
+
+    # Temperatur
+    target_mid = (tmin + tmax) / 2.0
+    diff_mid = abs(seasonal - target_mid)
+    s -= diff_mid * 4.0  # Abweichung vom sweet spot
+
+    if seasonal < tmin:
+        diff = tmin - seasonal
+        s -= diff * 3.0
+    elif seasonal > tmax:
+        diff = seasonal - tmax
+        s -= diff * 3.0
+
+    # Budget – sehr streng
+    if budget <= 0:
+        budget = 1.0
+    if ppd <= budget:
+        # leicht günstiger = leichter Bonus
+        under = (budget - ppd) / budget
+        s += min(under * 10.0, 5.0)
+    else:
+        over_rel = (ppd - budget) / budget   # 0.2 = 20% teurer
+        # 20% drüber → ca -25, 50% drüber → ca -60, 100% drüber → ca -100
+        s -= over_rel * 120.0
+        if ppd > budget * 1.5:
+            s -= 10.0
+        if ppd > budget * 2.0:
+            s -= 20.0
+
+    # Grobe Wetterkategorie
+    if cond_cat == "Clear":
+        s += 5.0
+    elif cond_cat == "Clouds":
+        s += 0.0
+    elif cond_cat in ("Rain", "Snow"):
+        s -= 10.0
+    elif cond_cat == "Storm":
+        s -= 15.0
+
+    return s
+
+def profile_bonus(tags: list[str], trip_type: str) -> float:
+    wanted = TRIP_PROFILES.get(trip_type, [])
+    if not wanted:
+        return 0.0
+    fit = len(set(t.lower() for t in tags).intersection(set(wanted))) / max(1, len(wanted))
+    # nur noch moderater Einfluss
+    return 10.0 * fit
+
+def haversine_km(lat1, lon1, lat2, lon2) -> float:
+    R=6371.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2-lat1)
+    dlmb = math.radians(lon2-lon1)
+    a = math.sin(dphi/2)**2 + math.cos(p1)*math.cos(p2)*math.sin(dlmb/2)**2
+    return R*2*math.atan2(math.sqrt(a), math.sqrt(1-a))
+
+def nearest_point(lat, lon, items, key_lat="lat", key_lon="lon"):
+    best, best_d = None, 1e18
+    for it in items:
+        d = haversine_km(lat, lon, it[key_lat], it[key_lon])
+        if d < best_d: best_d, best = d, it
+    return best, best_d
+
+def travel_estimate(lat_o, lon_o, lat_d, lon_d, mode: str) -> dict:
+    if None in (lat_o, lon_o, lat_d, lon_d):
+        return {"distance_km": None, "time_h": None, "cost_eur": None}
+    base = haversine_km(lat_o, lon_o, lat_d, lon_d)
+    factor = 1.0
+    if mode == "train": factor = 1.10
+    elif mode == "car": factor = 1.20
+    dist = base * factor
+    if mode == "flight":
+        speed = 800.0
+        base_h = 1.5
+        eur_per_km = 0.07
+        base_fee = 60.0   # etwas realistischer
+        t = dist/speed + base_h
+        c = dist*eur_per_km + base_fee
+    elif mode == "train":
+        speed = 130.0
+        eur_per_km = 0.18
+        t = dist/speed
+        c = dist*eur_per_km
+    else:
+        speed = 90.0
+        eur_per_km = 0.22
+        t = dist/speed
+        c = dist*eur_per_km
+    return {"distance_km": round(dist,1), "time_h": round(t,1), "cost_eur": round(c,2)}
+
+def budget_estimate(adults:int, nights:int, ppd:float, travel_cost_total:float|None, activities_per_day:float) -> dict:
+    stay = round(ppd * max(1,adults) * max(1,nights), 2)
+    travel = round(travel_cost_total or 0.0, 2)
+    acts = round(activities_per_day * max(1,nights) * max(1,adults), 2)
+    total = round(stay + travel + acts, 2)
+    return {"stay":stay, "travel":travel, "activities":acts, "total":total}
+
+def booking_search_url(city: str, checkin: str, checkout: str, adults: int) -> str:
+    q = quote_plus(city_key(city))
+    ci = checkin or "2025-06-01"
+    co = checkout or "2025-06-06"
+    return f"https://www.booking.com/searchresults.de.html?ss={q}&checkin={ci}&checkout={co}&group_adults={max(1,adults)}&no_rooms=1"
+
+def gmaps_drive_url(origin_name: str, lat_d: float, lon_d: float) -> str:
+    o = quote_plus(origin_name or "")
+    return f"https://www.google.com/maps/dir/{o}/{lat_d:.6f},{lon_d:.6f}"
+
+def skyscanner_url(dep_code: str, dest_city: str) -> str:
+    return f"https://www.skyscanner.de/transport/fluge/{dep_code.lower()}/anywhere/?adultsv2=1#results"
+
+def trainline_url(origin_city: str, dest_city: str) -> str:
+    return f"https://www.trainline.eu/search/{quote_plus(origin_city)}/{quote_plus(dest_city)}"
+
+def google_images_url(city: str) -> str:
+    return f"https://www.google.com/search?tbm=isch&q={quote_plus(city_key(city)+' sights')}"
+
+# ------------- Origin: beliebige Stadt via OSM -------------
+def geocode_freeform(query: str) -> tuple[float|None, float|None]:
+    """
+    Nutzt Nominatim / OpenStreetMap, um beliebige Städte zu geokodieren.
+    Kein Key notwendig.
+    """
+    if not query:
+        return (None, None)
+    url = "https://nominatim.openstreetmap.org/search?" + urlencode({
+        "format":"json",
+        "limit": 1,
+        "q": query,
+    })
+    try:
+        data = http_get_json(url)
+        if isinstance(data, list) and data:
+            d0 = data[0]
+            lat = float(d0.get("lat"))
+            lon = float(d0.get("lon"))
+            return (lat, lon)
+    except Exception:
+        pass
+    return (None, None)
+
+def resolve_origin(query: str) -> tuple[float|None, float|None, str|None]:
+    """
+    Versucht erst bekannte Städte (ORIGIN_POINTS),
+    danach freie Geocoding-Suche (beliebige Stadt).
+    """
+    if not query:
+        return (None, None, None)
+    key_norm = query.strip().lower()
+    # 1) harte Liste
+    val = ORIGIN_POINTS.get(key_norm)
+    if not val:
+        first = key_norm.split(",")[0].strip()
+        val = ORIGIN_POINTS.get(first)
+    if val:
+        return val
+
+    # 2) Geocoding über OSM
+    lat, lon = geocode_freeform(query)
+    if lat is not None and lon is not None:
+        pretty = query.strip()
+        return (lat, lon, pretty or None)
+
+    # 3) komplett fehlgeschlagen
+    return (None, None, query.strip() or None)
+
+# ----------------------------
+# FX-Raten (Standard + CSV)
+# ----------------------------
+FX_RATES = {
+    "EUR":1.0,
+    "USD":1.08,
+    "GBP":0.85,
+    "CHF":0.97,
+    "CZK":24.5,
+    "DKK":7.45,
+    "HUF":390.0,
+    "ISK":150.0,
+    "NOK":11.2,
+    "PLN":4.3,
+    "RON":4.9,
+    "SEK":11.0,
+    "JPY":165.0,
+    "AUD":1.65,
+    "CAD":1.47,
+}
+CURRENCIES = sorted(FX_RATES.keys())
+
+def load_fx_from_csv(path: str) -> None:
+    """
+    Lädt Währungskurse aus KursExport.csv.
+    Erwartet eine Spalte mit ISO-Code (z.B. ISO/Code) und eine mit Kurs (z.B. Kurs/Rate).
+    Dezimalkomma wird unterstützt.
+    """
+    global FX_RATES, CURRENCIES
+    try:
+        with open(path, newline="", encoding="utf-8") as f:
+            sniffer = csv.Sniffer()
+            sample = f.read(2048)
+            f.seek(0)
+            dialect = sniffer.sniff(sample)
+            reader = csv.DictReader(f, dialect=dialect)
+
+            codes_field = None
+            rate_field = None
+            headers = [h.strip() for h in reader.fieldnames or []]
+
+            for h in headers:
+                hl = h.lower()
+                if codes_field is None and hl in ("iso", "code", "währungscode", "currency", "iso-code"):
+                    codes_field = h
+                if rate_field is None and hl in ("kurs", "rate", "kurs_eur", "exchange-rate", "wechselkurs"):
+                    rate_field = h
+
+            if not codes_field or not rate_field:
+                print("⚠️  FX-CSV: keine passenden Spalten (ISO/Kurs) gefunden, benutze Standard-Raten.")
+                return
+
+            new_rates: dict[str, float] = {"EUR": 1.0}
+            for row in reader:
+                code = (row.get(codes_field) or "").strip().upper()
+                if not code:
+                    continue
+                val = (row.get(rate_field) or "").strip()
+                if not val:
+                    continue
+                val = val.replace(".", "").replace(",", ".") if val.count(",") == 1 and val.count(".") > 1 else val.replace(",", ".")
+                try:
+                    rate = float(val)
+                except ValueError:
+                    continue
+                if rate <= 0:
+                    continue
+                new_rates[code] = rate
+
+            if len(new_rates) > 1:
+                FX_RATES.update(new_rates)
+                CURRENCIES = sorted(FX_RATES.keys())
+                print(f"✅ FX-Raten aus CSV geladen ({len(new_rates)} Einträge).")
+            else:
+                print("⚠️  FX-CSV hatte keine verwertbaren Kurse, nutze Standard-Raten.")
+    except FileNotFoundError:
+        print(f"ℹ️  FX-CSV nicht gefunden ({path}), nutze Standard-Raten.")
+    except Exception as e:
+        print(f"⚠️  Fehler beim Laden von FX-CSV: {e}")
+
+def fx_convert(amount: float, frm: str, to: str) -> float | None:
+    frm = (frm or "EUR").upper()
+    to  = (to or "EUR").upper()
+    if frm not in FX_RATES or to not in FX_RATES:
+        return None
+    eur = amount / FX_RATES[frm]
+    return eur * FX_RATES[to]
+
+# ----------------------------
+# Booking-Proxy
+# ----------------------------
+def booking_avg_price_and_hotels(city: str, checkin: str, checkout: str, adults: int) -> tuple[float|None, list]:
+    if not (BOOKING_RAPIDAPI_KEY and BOOKING_RAPIDAPI_HOST):
+        return (None, [])
+    try:
+        u1 = f"https://{BOOKING_RAPIDAPI_HOST}/v1/hotels/locations?{urlencode({'name':city_key(city),'locale':'de'})}"
+        j1 = http_get_json(u1, {"x-rapidapi-key":BOOKING_RAPIDAPI_KEY,"x-rapidapi-host":BOOKING_RAPIDAPI_HOST})
+        if not j1:
+            return (None, [])
+        dest_id = None
+        for item in j1:
+            if item.get("dest_type") in ("city","region","district"):
+                dest_id = item.get("dest_id")
+                break
+        if not dest_id:
+            dest_id = j1[0].get("dest_id")
+        nights = nights_between(checkin, checkout)
+        params = {
+            "adults_number": max(1, adults),
+            "checkin_date": checkin or "2025-06-01",
+            "checkout_date": checkout or "2025-06-06",
+            "dest_id": dest_id, "dest_type": "city",
+            "order_by": "price", "filter_by_currency": "EUR",
+            "locale": "de", "units": "metric",
+            "page_number": "0", "room_number": "1",
+        }
+        u2 = f"https://{BOOKING_RAPIDAPI_HOST}/v1/hotels/search?{urlencode(params)}"
+        j2 = http_get_json(u2, {"x-rapidapi-key":BOOKING_RAPIDAPI_KEY,"x-rapidapi-host":BOOKING_RAPIDAPI_HOST})
+        result = j2.get("result") or []
+        hotels, prices = [], []
+        for r in result[:15]:
+            name = r.get("hotel_name") or r.get("hotel_name_trans") or r.get("property_name") or r.get("name")
+            price_total = None
+            pb = r.get("price_breakdown")
+            if isinstance(pb, dict) and pb.get("gross_price"):
+                price_total = float(pb["gross_price"])
+            elif r.get("min_total_price"):
+                price_total = float(r["min_total_price"])
+            review = r.get("review_score")
+            acc_type = r.get("accommodation_type_name") or r.get("accommodation_type") or ""
+            if name and price_total:
+                per_night = max(1.0, round(price_total / max(1,nights), 2))
+                hotels.append({"name": name, "price_per_night": per_night, "review_score": review, "type": acc_type})
+                prices.append(per_night)
+        avg = round(sum(prices)/len(prices), 2) if prices else None
+        return (avg, hotels)
+    except Exception:
+        return (None, [])
+
+def guides_offline(destination: str) -> list[dict]:
+    base = city_key(destination)
+    return [
+        {"title": f"Walking Tour in {base}", "price_eur": None, "url": f"https://www.google.com/search?q={quote_plus(base+' city tour')}"},
+        {"title": f"Food Highlights in {base}", "price_eur": None, "url": f"https://www.google.com/search?q={quote_plus(base+' food tour')}"},
+        {"title": f"Top Sights in {base}", "price_eur": None, "url": f"https://www.google.com/search?q={quote_plus(base+' top sights')}"},
+    ]
+
+# ----------------------------
+# HTML / UI
+# ----------------------------
+INDEX_HTML_TEMPLATE = """<!doctype html>
+<html lang="de"><head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Travel Destination Analyzer</title>
+<link href="https://unpkg.com/maplibre-gl@3.6.1/dist/maplibre-gl.css" rel="stylesheet" />
+<script src="https://unpkg.com/maplibre-gl@3.6.1/dist/maplibre-gl.js"></script>
+<style>
+:root{--bg:#0b1324;--card:#121a2b;--muted:#a7b0c3;--text:#f1f5ff;--accent:#4fc3f7;}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Arial;background:var(--bg);color:var(--text)}
+.container{max-width:1240px;margin:0 auto;padding:20px}
+.header{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.brand{display:flex;align-items:center;gap:10px}
+.brand h1{margin:0;font-weight:800}
+.lang{display:flex;align-items:center;gap:8px}
+.lang select{background:#0f1730;border:1px solid #263152;color:#fff;padding:8px 10px;border-radius:8px;height:40px}
+.card{background:var(--card);border:1px solid #1d2742;border-radius:14px;padding:14px}
+.grid{display:grid;gap:14px}
+.filters{
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(160px,1fr));
+  gap:12px;
+  align-items:stretch;
+}
+.input{display:flex;flex-direction:column;justify-content:space-between;gap:6px;min-height:90px}
+.input label{font-size:12px;color:var(--muted)}
+.input input, .input select, .input textarea{
+  background:#0f1730;border:1px solid #263152;color:#fff;
+  padding:8px 10px;border-radius:8px;height:36px;line-height:20px;
+}
+.input textarea{height:80px}
+.input .btn{align-self:flex-start;margin-top:auto;height:36px}
+.btn{appearance:none;border:0;background:linear-gradient(135deg,#4fc3f7,#7c4dff);color:#fff;padding:8px 12px;border-radius:9px;cursor:pointer;font-weight:700}
+.btn2{appearance:none;border:0;background:#22345f;color:#cfe3ff;padding:8px 12px;border-radius:8px;cursor:pointer}
+.btn:active{transform:translateY(1px)}
+.badge{display:inline-block;padding:2px 8px;border-radius:999px;background:#1f2a49;color:#c9d5ff;font-size:12px}
+.board{
+  display:grid;
+  grid-template-columns:minmax(0,2.4fr) minmax(0,1.1fr) minmax(0,1.1fr);
+  gap:14px;
+  margin-top:14px;
+}
+#mapCard{grid-row:1/3;grid-column:1/2}
+.kpiCol{grid-row:1/3;grid-column:2/3;display:grid;gap:14px}
+.kpiItem{min-height:120px}
+#routeCard{grid-row:1/3;grid-column:3/4;min-height:250px}
+.map{height:420px;border-radius:12px;border:1px solid #263152;overflow:hidden;background:#0f1730}
+.maplibregl-popup-content{background:#ffffff;color:#0b1324;border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,.5)}
+.maplibregl-popup-tip{border-top-color:#ffffff !important}
+.maplibregl-ctrl,.maplibregl-ctrl-group{background:#ffffff !important;color:#0b1324}
+.maplibregl-ctrl button{filter:none}
+.bottomRow{
+  display:grid;
+  grid-template-columns:2fr 1.4fr 1.6fr;
+  gap:14px;
+  margin-top:14px;
+}
+.flex{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.table{width:100%;border-collapse:collapse;font-size:14px;margin-top:14px}
+.table th,.table td{padding:10px 12px;border-bottom:1px solid #223058}
+.table th{color:#b7c1d9;text-align:left;font-weight:600}
+.details{
+  position:fixed;right:16px;top:16px;bottom:16px;width:420px;
+  background:#0f1730;border:1px solid #263152;border-radius:12px;
+  padding:12px;box-shadow:0 14px 28px rgba(0,0,0,.4);
+  display:none;overflow:auto;z-index:50
+}
+.details h3{margin:4px 0 8px;font-size:18px}
+.sight{margin-bottom:8px}
+.hotel{display:flex;justify-content:space-between;border-bottom:1px dashed #263152;padding:6px 0}
+.costgrid{display:grid;grid-template-columns:1fr auto;gap:6px;align-items:center}
+.linkrow{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+@media (max-width:980px){
+  .board{grid-template-columns:1fr;grid-auto-rows:auto}
+  #mapCard,.kpiCol,#routeCard{grid-row:auto;grid-column:1/2}
+  .bottomRow{grid-template-columns:1fr}
+  .details{position:fixed;width:100%;left:0;right:0;top:0;bottom:0;border-radius:0}
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <div class="brand">
+      <div style="font-size:22px">🌍</div>
+      <h1 id="t_title">Travel Destination Analyzer</h1>
+    </div>
+    <div class="lang">
+      <label for="langSel" style="color:#b7c1d9" id="t_lang">Sprache</label>
+      <select id="langSel">
+        <option value="de" selected>Deutsch</option>
+        <option value="en">English</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="card filters">
+    <div class="input"><label id="t_checkin">Check-in (optional)</label><input id="checkin" type="date"/></div>
+    <div class="input"><label id="t_checkout">Check-out (optional)</label><input id="checkout" type="date"/></div>
+    <div class="input"><label id="t_persons">Personen</label><input id="adults" type="number" min="1" value="2"/></div>
+    <div class="input"><label id="t_tmin">Temp min (°C)</label><input id="tmin" type="number" value="18"/></div>
+    <div class="input"><label id="t_tmax">Temp max (°C)</label><input id="tmax" type="number" value="28"/></div>
+    <div class="input"><label id="t_origin">Startort (für Route)</label><input id="origin" placeholder="Beliebige Stadt, z.B. München, Paris"/></div>
+    <div class="input"><label id="t_mode">Modus</label>
+      <select id="mode"><option value="car" selected>Auto</option><option value="train">Zug</option><option value="flight">Flug</option></select>
+    </div>
+    <div class="input"><label id="t_budget_ppd">Budget/Tag p.P. (€)</label><input id="budget" type="number" value="150" min="40" step="10"/></div>
+    <div class="input"><label id="t_actppd">Aktivitäten €/Tag p.P.</label><input id="actppd" type="number" value="30" min="0" step="5"/></div>
+    <div class="input"><label id="t_triptype">Art der Reise</label>
+      <select id="triptype">
+        <option value="city" selected>Citytrip</option>
+        <option value="strand">Strandurlaub</option>
+        <option value="familie">Familienurlaub</option>
+        <option value="outdoor">Wandern & Outdoor</option>
+        <option value="ski">Skifahren</option>
+        <option value="natur">Naturreisen</option>
+        <option value="wellness">Entspannung & Wellness</option>
+        <option value="kultur">Sightseeing & Kultur</option>
+        <option value="party">Partyurlaub</option>
+      </select>
+    </div>
+    <div class="input"><label id="t_markers">Nur Top-3</label>
+      <select id="onlytop"><option value="1" selected>Ja</option><option value="0">Alle</option></select>
+    </div>
+    <div class="input"><label>&nbsp;</label><button class="btn" id="runBtn">Analysieren</button></div>
+  </div>
+
+  <div class="board">
+    <div class="card" id="mapCard">
+      <div class="badge" id="t_map">Karte</div>
+      <div id="map" class="map"></div>
+    </div>
+
+    <div class="kpiCol">
+      <div class="card kpiItem">
+        <div class="badge" id="t_top">Top-Ziel</div>
+        <div id="bestTitle" style="font-size:18px;margin-top:6px">–</div>
+        <div id="bestMeta" style="color:#b7c1d9;margin-top:4px">–</div>
+      </div>
+      <div class="card kpiItem">
+        <div class="badge" id="t_filter">Ausgewählte Filter</div>
+        <div id="kpiFilters" style="margin-top:6px;color:#cfe3ff;font-size:13px">–</div>
+      </div>
+      <div class="card kpiItem">
+        <div class="badge" id="t_count">Anzahl der Ziele</div>
+        <div id="kpiCount" style="font-size:26px;margin-top:10px">–</div>
+      </div>
+    </div>
+
+    <div class="card" id="routeCard">
+      <div class="badge" id="t_route_box">Anreise / Route</div>
+      <div id="routeSummary" style="margin-top:8px;color:#cfe3ff;font-size:14px">Noch keine Route berechnet.</div>
+    </div>
+  </div>
+
+  <div class="bottomRow">
+    <div class="card">
+      <div class="badge" id="t_fx">Währungsumrechner</div>
+      <div class="flex" style="margin-top:8px">
+        <input id="fx_amount" style="width:120px" value="100" />
+        <select id="fx_from" style="width:110px"></select>
+        <span>→</span>
+        <select id="fx_to" style="width:110px"></select>
+        <button class="btn2" id="fxBtn">Umrechnen</button>
+      </div>
+      <div id="fx_out" style="margin-top:8px;color:#cfe3ff">–</div>
+    </div>
+
+    <div class="card">
+      <div class="badge" id="t_ai_title">Spezialanfrage (Gemini)</div>
+      <div class="input" style="min-height:unset;margin-top:8px">
+        <textarea id="aiq" rows="2" placeholder="z.B. »Gib mir 3 Insider-Tipps für Mallorca im Mai.«" style="height:80px"></textarea>
+      </div>
+      <button class="btn2" id="aiBtn">Fragen</button>
+      <div id="aiOut" style="margin-top:8px;color:#cfe3ff">–</div>
+    </div>
+
+    <div class="card">
+      <div class="badge" id="t_gyg_title">Aktivitäten & Inspiration</div>
+      <div id="gygCity" style="color:#b7c1d9;margin-top:4px">–</div>
+      <div id="gyg" style="margin-top:8px;color:#cfe3ff">Bitte Analyse ausführen…</div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:14px; overflow:auto">
+    <table class="table" id="tbl">
+      <thead><tr>
+        <th>#</th><th id="t_dest">Destination</th><th>Score</th><th id="t_season">Temp (Saison)</th><th id="t_weather">Wetter</th><th id="t_costppd">€/Tag p.P.</th><th id="t_total">Budget gesamt</th><th id="t_dist">Entfernung</th><th id="t_details">Details</th><th id="t_route_btn">Route</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<div id="details" class="details">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <h3 id="detTitle">Details</h3>
+    <button class="btn2" onclick="toggleDetails(false)" id="t_close">Schließen</button>
+  </div>
+  <div id="detMeta" style="color:#b7c1d9;margin-bottom:8px">–</div>
+
+  <div class="badge" style="margin-bottom:8px" id="t_cost_breakdown">Kostenaufschlüsselung</div>
+  <div id="detCosts" class="costgrid"></div>
+  <div class="linkrow" id="detCostLinks"></div>
+
+  <div class="badge" style="margin:12px 0 8px" id="t_sights">Top-Sehenswürdigkeiten</div>
+  <div id="detSights"></div>
+  <div class="badge" style="margin:12px 0 8px" id="t_hotels">Hotels & Apartments (Preis/Nacht, Score)</div>
+  <div id="detHotels"></div>
+  <div class="badge" style="margin:12px 0 8px" id="t_hazards">Warnhinweise & Saison</div>
+  <div id="detHazards"></div>
+</div>
+
+<script>
+const HAS_MAPTOOLKIT = {{HAS_MAPTOOLKIT}};
+const CURRENCIES = {{CURRENCIES_JSON}};
+
+const I18N = {
+  de: {
+    title:"Travel Destination Analyzer", lang:"Sprache",
+    checkin:"Check-in (optional)", checkout:"Check-out (optional)", persons:"Personen",
+    budget_ppd:"Budget/Tag p.P. (€)", tmin:"Temp min (°C)", tmax:"Temp max (°C)",
+    triptype:"Art der Reise", origin:"Startort (für Route)", mode:"Modus",
+    actppd:"Aktivitäten €/Tag p.P.", markers:"Nur Top-3", map:"Karte",
+    gyg_title:"Aktivitäten & Inspiration", fx:"Währungsumrechner (Mittelwerte aus CSV)",
+    ai_title:"Spezialanfrage (Gemini)", top:"Top-Ziel", filter:"Ausgewählte Filter",
+    count:"Anzahl der Ziele", dest:"Destination", season:"Temp (Saison)", weather:"Wetter",
+    costppd:"€/Tag p.P.", total:"Budget gesamt", dist:"Entfernung", details:"Details", route:"Route",
+    close:"Schließen", cost_breakdown:"Kostenaufschlüsselung", sights:"Top-Sehenswürdigkeiten",
+    hotels:"Hotels & Apartments (Preis/Nacht, Score)", hazards:"Warnhinweise & Saison",
+    fotos:"📷 Fotos zum Ort", analyze:"Analysieren",
+    drive:"Strecke", flight:"Luftlinie",
+    gyg_loading:"Bitte Analyse ausführen…",
+    fx_failed:"Umrechnung fehlgeschlagen",
+    ai_enter:"Bitte eine Frage eingeben.",
+    route_box:"Anreise / Route",
+    aa_link:"Auswärtiges Amt: Reise- und Sicherheitshinweise"
+  },
+  en: {
+    title:"Travel Destination Analyzer", lang:"Language",
+    checkin:"Check-in (optional)", checkout:"Check-out (optional)", persons:"People",
+    budget_ppd:"Budget/day pp (€)", tmin:"Temp min (°C)", tmax:"Temp max (°C)",
+    triptype:"Trip type", origin:"Origin (for route)", mode:"Mode",
+    actppd:"Activities €/day pp", markers:"Top-3 only", map:"Map",
+    gyg_title:"Activities & inspiration", fx:"Currency converter (CSV averages)",
+    ai_title:"Special query (Gemini)", top:"Top destination", filter:"Selected filters",
+    count:"Number of destinations", dest:"Destination", season:"Season temp", weather:"Weather",
+    costppd:"€/day pp", total:"Total budget", dist:"Distance", details:"Details", route:"Route",
+    close:"Close", cost_breakdown:"Cost breakdown", sights:"Top sights",
+    hotels:"Hotels & apartments (price/night, score)", hazards:"Advisories & season",
+    fotos:"📷 Photos", analyze:"Analyze",
+    drive:"Distance", flight:"Great-circle",
+    gyg_loading:"Run analysis…",
+    fx_failed:"Conversion failed",
+    ai_enter:"Please enter a question.",
+    route_box:"Travel / Route",
+    aa_link:"German foreign office travel advice"
+  }
+};
+let LANG = 'de';
+function t(k){ return (I18N[LANG] && I18N[LANG][k])||k; }
+function applyLang(){
+  document.getElementById('t_title').textContent=t('title');
+  document.getElementById('t_lang').textContent=t('lang');
+  document.getElementById('t_checkin').textContent=t('checkin');
+  document.getElementById('t_checkout').textContent=t('checkout');
+  document.getElementById('t_persons').textContent=t('persons');
+  document.getElementById('t_budget_ppd').textContent=t('budget_ppd');
+  document.getElementById('t_tmin').textContent=t('tmin');
+  document.getElementById('t_tmax').textContent=t('tmax');
+  document.getElementById('t_triptype').textContent=t('triptype');
+  document.getElementById('t_origin').textContent=t('origin');
+  document.getElementById('t_mode').textContent=t('mode');
+  document.getElementById('t_actppd').textContent=t('actppd');
+  document.getElementById('t_markers').textContent=t('markers');
+  document.getElementById('runBtn').textContent=t('analyze');
+  document.getElementById('t_map').textContent=t('map');
+  document.getElementById('t_gyg_title').textContent=t('gyg_title');
+  document.getElementById('t_fx').textContent=t('fx');
+  document.getElementById('t_ai_title').textContent=t('ai_title');
+  document.getElementById('t_top').textContent=t('top');
+  document.getElementById('t_filter').textContent=t('filter');
+  document.getElementById('t_count').textContent=t('count');
+  document.getElementById('t_dest').textContent=t('dest');
+  document.getElementById('t_season').textContent=t('season');
+  document.getElementById('t_weather').textContent=t('weather');
+  document.getElementById('t_costppd').textContent=t('costppd');
+  document.getElementById('t_total').textContent=t('total');
+  document.getElementById('t_dist').textContent=t('dist');
+  document.getElementById('t_details').textContent=t('details');
+  document.getElementById('t_route_btn').textContent=t('route');
+  document.getElementById('t_close').textContent=t('close');
+  document.getElementById('t_cost_breakdown').textContent=t('cost_breakdown');
+  document.getElementById('t_sights').textContent=t('sights');
+  document.getElementById('t_hotels').textContent=t('hotels');
+  document.getElementById('t_hazards').textContent=t('hazards');
+  document.getElementById('t_route_box').textContent=t('route_box');
+  const gyg = document.getElementById('gyg');
+  if(gyg && (gyg.textContent||'').includes('Bitte Analyse ausführen')) gyg.textContent = t('gyg_loading');
+}
+function qs(id){return document.getElementById(id)}
+function fmtEuro(n){return (n==null||isNaN(n))?'–':'€'+Number(n).toLocaleString(LANG==='de'?'de-DE':'en-US')}
+let map=null, markers=[], routeReady=false;
+
+function condText(row){
+  if(LANG==='en' && row.condition_en){ return row.condition_en; }
+  return row.condition;
+}
+
+function ensureMap(){
+  if(!map){
+    const primary = '/tiles/{z}/{x}/{y}.png';
+    const fallback = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+    const tiles = HAS_MAPTOOLKIT ? [primary, fallback] : [fallback];
+
+    map = new maplibregl.Map({
+      container: 'map',
+      style: {
+        "version": 8,
+        "sources": { "raster-tiles": { "type": "raster", "tiles": tiles, "tileSize": 256, "attribution": "© MapToolKit / © OpenStreetMap" } },
+        "layers": [ { "id": "base", "type": "raster", "source": "raster-tiles" } ]
+      },
+      center: [10,50], zoom: 4
+    });
+    map.on('load', ()=>{
+      map.addSource('route', {type:'geojson', data:{"type":"FeatureCollection","features":[]}})
+      map.addLayer({id:'route-line', type:'line', source:'route', paint:{'line-width':3,'line-color':'#4fc3f7'}});
+      routeReady=true;
+    });
+  }
+  return true;
+}
+function drawRoute(coords){
+  if(!map) return;
+  const data={"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"LineString","coordinates":coords}}]};
+  const act=()=>{ map.getSource('route').setData(data); map.fitBounds(new maplibregl.LngLatBounds(coords[0], coords[coords.length-1]), {padding:50}); };
+  routeReady ? act() : map.once('load', ()=>{routeReady=true; act();});
+}
+function setMarkers(rows){
+  markers.forEach(m=>m.remove()); markers=[];
+  const bounds = new maplibregl.LngLatBounds();
+  const origin = qs('origin').value, mode = qs('mode').value;
+
+  rows.forEach((r,i)=>{
+    const el = document.createElement('div');
+    el.style.cssText='background:#4fc3f7;width:12px;height:12px;border-radius:50%;border:2px solid #0b1324';
+    let distanceLine = '';
+    if(origin && r.travel && r.travel.distance_km!=null) {
+      const carOrTrain = (mode==='car' || mode==='train');
+      distanceLine = carOrTrain
+        ? `<br>${t('drive')}: ${r.travel.distance_km} km · ${r.travel.time_h} h · ${fmtEuro(r.travel.cost_eur)}`
+        : `<br>${t('flight')}: ${r.travel.distance_km} km · ${r.travel.time_h} h`;
+    }
+    const popupHTML = `<b>${r.destination}</b><br>Score: ${r.score}<br>${r.season_temp.toFixed(1)}°C · ${condText(r)}<br>${fmtEuro(r.cost_ppd)}/Tag p.P.${distanceLine}<br><br><button id="d_${i}" class="btn2">${t('details')}</button>`;
+    const m = new maplibregl.Marker(el).setLngLat([r.lon, r.lat]).setPopup(new maplibregl.Popup().setHTML(popupHTML)).addTo(map);
+    m.getElement().addEventListener('click',()=>setTimeout(()=>{
+      const b=document.getElementById('d_'+i);
+      if(b){ b.onclick=()=>{ openDetails(r); loadGYG(r.destination, r.lat, r.lon); loadHazards(r.country); }; }
+    }, 80));
+    markers.push(m); bounds.extend([r.lon, r.lat]);
+  });
+  if(rows.length===1){ map.flyTo({center:[rows[0].lon, rows[0].lat], zoom:8}); }
+  else if(rows.length>1){ map.fitBounds(bounds, {padding:40}); }
+}
+function renderTable(rows){
+  const tb=qs('tbl').querySelector('tbody'); tb.innerHTML='';
+  rows.forEach((r,i)=>{
+    const tr=document.createElement('tr');
+    const btnDet=document.createElement('button'); btnDet.className='btn2'; btnDet.textContent=t('details');
+    btnDet.onclick=()=>{ openDetails(r); loadGYG(r.destination, r.lat, r.lon); loadHazards(r.country); };
+    const tdBtn=document.createElement('td'); tdBtn.appendChild(btnDet);
+    const btnRoute=document.createElement('button'); btnRoute.className='btn2'; btnRoute.textContent=t('route');
+    btnRoute.onclick=()=>showRouteTo(r);
+    const tdRoute=document.createElement('td'); tdRoute.appendChild(btnRoute);
+    const distTxt = (r.travel && r.travel.distance_km!=null) ? (r.travel.distance_km+' km') : '–';
+    tr.innerHTML=`<td>${i+1}</td><td>${r.destination}</td><td>${r.score}</td>
+      <td style="text-align:right">${r.season_temp.toFixed(1)}°C</td>
+      <td>${condText(r)}</td><td style="text-align:right">${fmtEuro(r.cost_ppd)}</td>
+      <td style="text-align:right">${fmtEuro(r.budget_total)}</td>
+      <td style="text-align:right">${distTxt}</td>`;
+    tr.appendChild(tdBtn); tr.appendChild(tdRoute); tb.appendChild(tr);
+  });
+}
+function toggleDetails(show){ document.getElementById('details').style.display = show ? 'block' : 'none'; }
+function fillCosts(row){
+  const c = row.costs || {stay:null,travel:null,activities:null,total:null};
+  const det = document.getElementById('detCosts');
+  det.innerHTML = `
+    <div>🏨 Unterkunft</div><div>${fmtEuro(c.stay)}</div>
+    <div>🚀 Anreise</div><div>${fmtEuro(c.travel)}</div>
+    <div>🎟️ Aktivitäten</div><div>${fmtEuro(c.activities)}</div>
+    <div><b>Σ Gesamt</b></div><b>${fmtEuro(c.total)}</b>
+  `;
+  const links = document.getElementById('detCostLinks');
+  const l=row.links||{};
+  const btn = (label, url)=> url? `<a class="btn2" target="_blank" href="${url}">${label}</a>`:'';
+  links.innerHTML = [
+    btn("Hotels (Booking)", l.stay),
+    btn("Anreise", l.travel),
+    btn("Aktivitäten / Inspiration", l.activities),
+    btn(t("fotos"), l.photos)
+  ].filter(Boolean).join('');
+}
+async function openDetails(row){
+  document.getElementById('detTitle').textContent = row.destination;
+  document.getElementById('detMeta').textContent = `≈${row.season_temp.toFixed(1)}°C · ${condText(row)} · ${fmtEuro(row.cost_ppd)}/Tag p.P. · ${t('total')}: ${fmtEuro(row.budget_total)}`;
+  document.getElementById('detSights').innerHTML = '…';
+  document.getElementById('detHotels').innerHTML='…';
+  document.getElementById('detHazards').innerHTML='…';
+  fillCosts(row);
+  toggleDetails(true);
+
+  try{
+    const sr = await fetch('/api/sights', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({city: row.destination})});
+    const data = await sr.json();
+    document.getElementById('detSights').innerHTML = (data.sights||[]).map(s=>`<div class="sight">• ${s}</div>`).join('') || '–';
+  } catch(e){ document.getElementById('detSights').textContent='Fehler beim Laden'; }
+
+  try{
+    const ci=document.getElementById('checkin').value, co=document.getElementById('checkout').value, ad=Number(document.getElementById('adults').value||2);
+    const hr = await fetch('/api/hotels', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({city: row.destination, checkin: ci, checkout: co, adults: ad})});
+    const data = await hr.json();
+    const list=(data.hotels||[]).map(h=>{
+      const sc=(h.review_score!=null && !isNaN(h.review_score))? `<span class="badge" style="background:#1f3a2a">${Number(h.review_score).toFixed(1)}</span>`:'';
+      const typ=h.type?` <span class="badge">${h.type}</span>`:'';
+      return `<div class="hotel"><span>${h.name}${typ} ${sc}</span><span>${fmtEuro(h.price_per_night)}</span></div>`;
+    }).join('');
+    document.getElementById('detHotels').innerHTML=list || '–';
+  } catch(e){ document.getElementById('detHotels').textContent='Fehler beim Laden'; }
+}
+async function loadHazards(country){
+  try{
+    const r = await fetch('/api/hazards', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({country})});
+    const data = await r.json();
+    const itemsHtml = (data.items||[]).map(h=>`<div class="sight">• <b>${h.risk}</b> (${h.season}) – ${h.advice}</div>`).join('') || '–';
+    let linkHtml = '';
+    if(data.link){
+      linkHtml = `<div style="margin-top:10px"><a class="btn2" target="_blank" href="${data.link}">${t('aa_link')}</a></div>`;
+    }
+    document.getElementById('detHazards').innerHTML = itemsHtml + linkHtml;
+  }catch(e){ document.getElementById('detHazards').textContent='Fehler beim Laden'; }
+}
+async function showRouteTo(row){
+  const origin = document.getElementById('origin').value; const mode = document.getElementById('mode').value;
+  if(!origin){ alert(LANG==='de'?'Bitte Startort eingeben.':'Please enter origin.'); return; }
+  try{
+    const r = await fetch('/api/route', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({origin, dest:{lat:row.lat, lon:row.lon}, mode})});
+    const data = await r.json();
+    if(data.coords){ drawRoute(data.coords); }
+    let base = `${t('dist')}: ${data.distance_km} km · ${data.time_h} h · ${fmtEuro(data.cost_eur)}`;
+    if(mode!=='car' && data.suggested && data.suggested.name){
+      base += `\n${LANG==='de'?'Vorgeschlagener Abfahrtsort':'Suggested departure'}: ${data.suggested.name}`;
+    }
+    document.getElementById('routeSummary').textContent = base.replace('\\n',' | ');
+    alert(base);
+  }catch(e){ alert(LANG==='de'?'Route konnte nicht berechnet werden.':'Route failed.'); }
+}
+function gygCard(item){
+  const price = item.price_eur!=null ? ` · ${fmtEuro(item.price_eur)}` : '';
+  return `<a href="${item.url}" target="_blank" class="btn2" style="margin:6px 6px 0 0; display:inline-block">${item.title}${price}</a>`;
+}
+async function loadGYG(destination, lat, lon){
+  document.getElementById('gyg').innerHTML=t('gyg_loading');
+  document.getElementById('gygCity').textContent = destination;
+  try{
+    const r = await fetch('/api/guides',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({destination, lat, lon})});
+    const data = await r.json();
+    const items = (data.items||[]);
+    let html = items.map(it=>gygCard(it)).join('');
+    const photoBtn = `<a class="btn2" target="_blank" href="${encodeURI('https://www.google.com/search?tbm=isch&q='+destination)}" style="margin:6px 6px 0 0; display:inline-block">${t('fotos')}</a>`;
+    html += photoBtn;
+    document.getElementById('gyg').innerHTML = html || photoBtn;
+  }catch(e){
+    document.getElementById('gyg').textContent='Fehler beim Laden';
+  }
+}
+function fillCurrencySelects(){
+  const from=document.getElementById('fx_from'), to=document.getElementById('fx_to');
+  from.innerHTML = CURRENCIES.map(c=>`<option ${c==='EUR'?'selected':''}>${c}</option>`).join('');
+  to.innerHTML   = CURRENCIES.map(c=>`<option ${c==='USD'?'selected':''}>${c}</option>`).join('');
+}
+async function analyze(){
+  const payload = {
+    checkin: document.getElementById('checkin').value, checkout: document.getElementById('checkout').value,
+    adults: Number(document.getElementById('adults').value||2), budget: Number(document.getElementById('budget').value||150),
+    tmin: Number(document.getElementById('tmin').value||18), tmax: Number(document.getElementById('tmax').value||28),
+    triptype: document.getElementById('triptype').value, origin: document.getElementById('origin').value, mode: document.getElementById('mode').value,
+    actppd: Number(document.getElementById('actppd').value||0)
+  };
+  try{
+    const r = await fetch('/api/analyze', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
+    const data = await r.json();
+
+    const onlyTop = document.getElementById('onlytop').value === '1';
+    const rows = onlyTop ? data.rows.slice(0,3) : data.rows;
+
+    renderTable(data.rows);
+    document.getElementById('kpiCount').textContent = data.rows.length;
+    const ci = payload.checkin || '–', co = payload.checkout || '–';
+    document.getElementById('kpiFilters').textContent =
+      `${LANG==='de'?'Check-in':'Check-in'}: ${ci} · ${LANG==='de'?'Check-out':'Check-out'}: ${co} · ${LANG==='de'?'Personen':'People'}: ${payload.adults} · ${t('budget_ppd')}: ${fmtEuro(payload.budget)} · ${LANG==='de'?'Wunsch-Temp':'Target temp'}: ${payload.tmin}–${payload.tmax}°C · ${t('triptype')}: ${payload.triptype} · ${LANG==='de'?'Start':'Origin'}: ${payload.origin||'–'} (${payload.mode}) · ${t('actppd')}: ${fmtEuro(payload.actppd)}`;
+
+    if(data.rows.length){
+      const b=data.rows[0];
+      document.getElementById('bestTitle').textContent = `${b.destination} (Score ${b.score})`;
+      document.getElementById('bestMeta').textContent = `≈${b.season_temp.toFixed(1)}°C · ${condText(b)} · ${fmtEuro(b.cost_ppd)}/Tag p.P. · ${t('total')}: ${fmtEuro(b.budget_total)}`;
+      if(b.travel && b.travel.distance_km!=null){
+        let txt = `${t('dist')}: ${b.travel.distance_km} km · ${b.travel.time_h} h · ${fmtEuro(b.travel.cost_eur)}`;
+        if(b.suggested && b.suggested.name){
+          txt += ` · ${LANG==='de'?'Abfahrt':'Departure'}: ${b.suggested.name}`;
+        }
+        document.getElementById('routeSummary').textContent = txt;
+      } else {
+        document.getElementById('routeSummary').textContent = LANG==='de'?'Bitte Startort (z.B. Berlin, München) eingeben, um Routen zu sehen.':'Enter origin to see routes.';
+      }
+      loadGYG(b.destination, b.lat, b.lon);
+      if(ensureMap()){ setMarkers(rows); }
+    } else {
+      document.getElementById('bestTitle').textContent='–';
+      document.getElementById('bestMeta').textContent='–';
+      document.getElementById('routeSummary').textContent='–';
+      document.getElementById('gyg').textContent=t('gyg_loading');
+      document.getElementById('gygCity').textContent='–';
+    }
+  }catch(e){ alert(LANG==='de'?'Analyse fehlgeschlagen.':'Analysis failed.'); }
+}
+
+document.getElementById('runBtn').addEventListener('click', analyze);
+document.getElementById('langSel').addEventListener('change', (e)=>{ LANG=e.target.value; applyLang(); analyze(); });
+document.addEventListener('DOMContentLoaded', ()=>{ ensureMap(); fillCurrencySelects(); applyLang(); analyze(); });
+
+document.getElementById('fxBtn').addEventListener('click', async ()=>{
+  const amount = Number(document.getElementById('fx_amount').value)||0,
+        frm=(document.getElementById('fx_from').value||'EUR').trim().toUpperCase(),
+        to =(document.getElementById('fx_to').value||'USD').trim().toUpperCase();
+  const out=document.getElementById('fx_out'); out.textContent='…';
+  try{
+    const r = await fetch('/api/convert', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({amount, frm, to})});
+    const data = await r.json();
+    out.textContent = (data && typeof data.result==='number')
+      ? `${amount} ${frm} = ${data.result.toFixed(4)} ${to}`
+      : (data.error||t('fx_failed'));
+  }catch(e){ out.textContent=t('fx_failed'); }
+});
+
+document.getElementById('aiBtn').addEventListener('click', async ()=>{
+  const q = (document.getElementById('aiq').value||'').trim();
+  const out=document.getElementById('aiOut');
+  if(!q){ out.textContent=t('ai_enter'); return; }
+  out.textContent='…';
+  try{
+    const r = await fetch('/api/ask', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({q})});
+    const data = await r.json();
+    out.textContent = data.text || (data.error || '–');
+  }catch(e){ out.textContent='Fehler'; }
+});
+</script>
+</body></html>
+"""
+
+# ----------------------------
+# HTTP Handler
+# ----------------------------
+class Handler(BaseHTTPRequestHandler):
+    def _send(self, code: int, body: bytes, ctype: str = "text/html; charset=utf-8"):
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            if body:
+                try:
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                    pass
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            pass
+
+    def do_GET(self):
+        p = urlparse(self.path).path
+        if p == "/":
+            has_tiles = "true" if (MAPTOOLKIT_RAPIDAPI_KEY and MAPTOOLKIT_RAPIDAPI_HOST) else "false"
+            html = (
+                INDEX_HTML_TEMPLATE
+                .replace("{{HAS_MAPTOOLKIT}}", has_tiles)
+                .replace("{{CURRENCIES_JSON}}", json.dumps(CURRENCIES))
+            )
+            return self._send(200, html.encode("utf-8"))
+
+        if p.startswith("/tiles/") and p.endswith(".png"):
+            try:
+                _, _, z, x, y_png = p.split("/", 4)
+                y = y_png[:-4]
+                z_i, x_i, y_i = int(z), int(x), int(y)
+                data = maptoolkit_tile_png(z_i, x_i, y_i)
+                if not data:
+                    return self._send(502, b"", "image/png")
+                return self._send(200, data, "image/png")
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                return
+            except Exception:
+                return self._send(500, b"", "image/png")
+
+        return self._send(404, b"Not Found", "text/plain; charset=utf-8")
+
+    def do_POST(self):
+        p = urlparse(self.path).path
+        length = int(self.headers.get("Content-Length", "0"))
+        try:
+            payload = json.loads(self.rfile.read(length) or b"{}")
+        except Exception:
+            payload = {}
+
+        if p == "/api/analyze":
+            checkin  = str(payload.get("checkin","") or "")
+            checkout = str(payload.get("checkout","") or "")
+            adults   = int(payload.get("adults",2))
+            budget   = float(payload.get("budget",150.0))
+            tmin     = float(payload.get("tmin",18.0))
+            tmax     = float(payload.get("tmax",28.0))
+            triptype = str(payload.get("triptype","city"))
+            origin_q = str(payload.get("origin","") or "")
+            mode     = str(payload.get("mode","car"))
+            actppd   = float(payload.get("actppd",30.0))
+
+            o_lat, o_lon, o_name = resolve_origin(origin_q)
+
+            rows = []
+            for d in DESTINATIONS:
+                seas, cond_cat, cond_de, cond_en = seasonal_temp_and_condition(d["name"], checkin)
+
+                avg_price, _ = booking_avg_price_and_hotels(d["name"], checkin, checkout, adults)
+                ppd = round((avg_price / max(1, adults)), 2) if avg_price else float(d["avg_cost_per_day"])
+
+                base = score_base(seas, cond_cat, ppd, tmin, tmax, budget)
+                bonus = profile_bonus(d.get("tags", []), triptype)
+                sc_raw = base + bonus
+                sc = max(0.0, min(100.0, round(sc_raw, 1)))
+
+                trv = travel_estimate(o_lat, o_lon, d["lat"], d["lon"], mode) if o_lat is not None else {"cost_eur":0.0,"distance_km":None,"time_h":None}
+                nights = nights_between(checkin, checkout, default_nights=5)
+                bud = budget_estimate(adults, nights, ppd, trv.get("cost_eur"), actppd)
+
+                suggested = None
+                travel_link = None
+                if o_lat is not None:
+                    if mode == "car":
+                        travel_link = gmaps_drive_url(o_name or origin_q, d["lat"], d["lon"])
+                    elif mode == "flight":
+                        dep, _ = nearest_point(o_lat, o_lon, AIRPORTS)
+                        if dep: suggested = {"type":"airport","code":dep["code"],"name":dep["name"]}
+                        travel_link = skyscanner_url(dep["code"] if dep else "any", city_key(d["name"]))
+                    elif mode == "train":
+                        dep, _ = nearest_point(o_lat, o_lon, TRAIN_HUBS)
+                        if dep: suggested = {"type":"train","name":dep["name"]}
+                        travel_link = trainline_url(o_name or origin_q, d["name"])
+
+                links = {
+                    "stay": booking_search_url(d["name"], checkin, checkout, adults),
+                    "travel": travel_link,
+                    "activities": f"https://www.google.com/search?q={quote_plus(city_key(d['name'])+' activities')}",
+                    "photos": google_images_url(d["name"])
+                }
+
+                rows.append({
+                    "destination": d["name"], "score": sc,
+                    "season_temp": float(seas),
+                    "condition": cond_de,
+                    "condition_en": cond_en,
+                    "cost_ppd": ppd, "lat": d["lat"], "lon": d["lon"],
+                    "budget_total": bud["total"], "country": d.get("country",""),
+                    "travel": trv, "costs": bud, "links": links, "suggested": suggested
+                })
+            rows.sort(key=lambda r: r["score"], reverse=True)
+            return self._send(200, json.dumps({"rows": rows}, ensure_ascii=False).encode("utf-8"),
+                              "application/json; charset=utf-8")
+
+        if p == "/api/sights":
+            city = str(payload.get("city",""))
+            base = city_key(city)
+            examples = [
+                f"Altstadt von {base}",
+                f"Wichtigste Aussichtspunkte in {base}",
+                f"Beliebte Strände / Parks in {base}",
+                f"Lokale Spezialitäten in {base}",
+                f"Skyline- oder Sunset-Spot in {base}",
+            ]
+            return self._send(200, json.dumps({"sights": examples}, ensure_ascii=False).encode("utf-8"),
+                              "application/json; charset=utf-8")
+
+        if p == "/api/hotels":
+            city    = str(payload.get("city",""))
+            checkin = str(payload.get("checkin","") or "")
+            checkout= str(payload.get("checkout","") or "")
+            adults  = int(payload.get("adults",2))
+            avg, hotels = booking_avg_price_and_hotels(city, checkin, checkout, adults)
+            return self._send(200, json.dumps({"avg": avg, "hotels": hotels}, ensure_ascii=False).encode("utf-8"),
+                              "application/json; charset=utf-8")
+
+        if p == "/api/guides":
+            dest = str(payload.get("destination",""))
+            items = guides_offline(dest)
+            return self._send(200, json.dumps({"items": items}, ensure_ascii=False).encode("utf-8"),
+                              "application/json; charset=utf-8")
+
+        if p == "/api/hazards":
+            country = str(payload.get("country","")).upper()
+            items = HAZARDS.get(country, [])
+            return self._send(200, json.dumps({"items": items}, ensure_ascii=False).encode("utf-8"),
+                              "application/json; charset=utf-8")
+
+        if p == "/api/convert":
+            amount = float(payload.get("amount",0.0))
+            frm    = (payload.get("frm","EUR") or "EUR").upper()
+            to     = (payload.get("to","USD") or "USD").upper()
+            res = fx_convert(amount, frm, to)
+            if res is None:
+                return self._send(200, json.dumps({"error":"Umrechnung fehlgeschlagen."}, ensure_ascii=False).encode("utf-8"),
+                                  "application/json; charset=utf-8")
+            return self._send(200, json.dumps({"result": float(res)}, ensure_ascii=False).encode("utf-8"),
+                              "application/json; charset=utf-8")
+
+        if p == "/api/route":
+            origin = str(payload.get("origin","") or "")
+            dest   = payload.get("dest") or {}
+            mode   = str(payload.get("mode","car"))
+            dlat, dlon = float(dest.get("lat",0)), float(dest.get("lon",0))
+            olat, olon, oname = resolve_origin(origin)
+            trv = travel_estimate(olat, olon, dlat, dlon, mode)
+            coords = None
+            if None not in (olat,olon,dlat,dlon):
+                coords = [[olon, olat],[dlon, dlat]]
+            suggested = None
+            if mode == "flight" and olat is not None:
+                dep, _ = nearest_point(olat, olon, AIRPORTS)
+                if dep: suggested = {"type":"airport","code":dep["code"],"name":dep["name"]}
+            elif mode == "train" and olat is not None:
+                dep, _ = nearest_point(olat, olon, TRAIN_HUBS)
+                if dep: suggested = {"type":"train","name":dep["name"]}
+
+            return self._send(200, json.dumps({
+                "origin":{"lat":olat,"lon":olon,"name":oname or origin},
+                "distance_km":trv["distance_km"], "time_h":trv["time_h"], "cost_eur":trv["cost_eur"],
+                "coords": coords, "suggested": suggested
+            }, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+
+        if p == "/api/ask":
+            q = str(payload.get("q","")).strip()
+            if not q:
+                return self._send(200, json.dumps({"error":"empty"}, ensure_ascii=False).encode("utf-8"),
+                                  "application/json; charset=utf-8")
+            if not GOOGLE_AI_STUDIO_API_KEY:
+                return self._send(200, json.dumps({"error":"Kein GOOGLE_AI_STUDIO_API_KEY gesetzt."}, ensure_ascii=False).encode("utf-8"),
+                                  "application/json; charset=utf-8")
+
+            models = [
+                GOOGLE_AI_STUDIO_MODEL or "gemini-2.5-flash",
+                "gemini-2.5-flash-lite",
+                "gemini-2.5-pro",
+            ]
+            tried = set()
+            text = None
+            last_err = None
+
+            for model in models:
+                if not model or model in tried:
+                    continue
+                tried.add(model)
+                try:
+                    endpoint = (
+                        "https://generativelanguage.googleapis.com/v1beta/models/"
+                        + model
+                        + ":generateContent"
+                    )
+                    body = {"contents":[{"parts":[{"text": q}]}]}
+                    jr = http_post_json(endpoint, body, {"x-goog-api-key": GOOGLE_AI_STUDIO_API_KEY})
+                    try:
+                        text = jr["candidates"][0]["content"]["parts"][0]["text"]
+                    except Exception:
+                        cand = (jr.get("candidates") or [{}])[0]
+                        content = cand.get("content") or {}
+                        parts = content.get("parts") or []
+                        if parts and isinstance(parts[0], dict):
+                            text = parts[0].get("text")
+                        else:
+                            text = None
+                    if text:
+                        break
+                except error.HTTPError as e:
+                    try:
+                        detail = e.read().decode('utf-8', 'ignore')
+                    except Exception:
+                        detail = ""
+                    last_err = f"HTTP {e.code}: {detail}"
+                    if e.code in (404, 400):
+                        continue
+                    else:
+                        break
+                except Exception as e:
+                    last_err = str(e)
+                    break
+
+            if not text:
+                return self._send(200, json.dumps({"error":"AI request failed", "detail": last_err}, ensure_ascii=False).encode("utf-8"),
+                                  "application/json; charset=utf-8")
+
+            return self._send(200, json.dumps({"text": text}, ensure_ascii=False).encode("utf-8"),
+                              "application/json; charset=utf-8")
+
+        return self._send(404, b"Not Found", "text/plain; charset=utf-8")
+
+    def log_message(self, format, *args):
+        try:
+            p = urlparse(getattr(self, "path", "")).path
+            if p.startswith("/tiles/"):
+                return
+        except Exception:
+            pass
+        super().log_message(format, *args)
+
+# ----------------------------
+# MapToolkit-Proxy
+# ----------------------------
+def maptoolkit_tile_png(z: int, x: int, y: int) -> bytes | None:
+    if not (MAPTOOLKIT_RAPIDAPI_KEY and MAPTOOLKIT_RAPIDAPI_HOST):
+        return None
+    path = MAPTOOLKIT_RAPIDAPI_PATH_TEMPLATE.format(z=z, x=x, y=y)
+    url = f"https://{MAPTOOLKIT_RAPIDAPI_HOST}{path}"
+    headers = {
+        "User-Agent": "travel-webapp/1.0",
+        "x-rapidapi-key": MAPTOOLKIT_RAPIDAPI_KEY,
+        "x-rapidapi-host": MAPTOOLKIT_RAPIDAPI_HOST,
+    }
+    try:
+        req = request.Request(url, headers=headers)
+        with request.urlopen(req, context=SSL_CTX, timeout=30) as resp:
+            if resp.status != 200:
+                return None
+            return resp.read()
+    except Exception:
+        return None
+
+# ----------------------------
+# Server Start
+# ----------------------------
+def main():
+    host, port = "127.0.0.1", 8000
+    print("🌍 Travel Destination Analyzer – MapLibre + MapToolKit / OSM, Booking, Klima aus CSV, FX aus KursExport, Gemini 2.5")
+    print(f" → http://{host}:{port}")
+    if not MAPTOOLKIT_RAPIDAPI_KEY:
+        print("ℹ️ Ohne MAPTOOLKIT_RAPIDAPI_KEY wird der OSM-Fallback genutzt.")
+    if not GOOGLE_AI_STUDIO_API_KEY:
+        print("ℹ️ Kein GOOGLE_AI_STUDIO_API_KEY gesetzt – AI-Funktion /api/ask wird Fehler zurückgeben.")
+    load_climate_weekly(CLIMATE_CSV_PATH)
+    load_fx_from_csv(FX_CSV_PATH)
+    print("Beenden: STRG+C")
+    HTTPServer((host, port), Handler).serve_forever()
+
+if __name__ == "__main__":
+    main()
