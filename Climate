@@ -1,1 +1,169 @@
+# services/climate_service.py
+from __future__ import annotations
+import csv
+import datetime as dt
+from typing import Dict
+from config import CLIMATE_CSV_PATH
+from .destinations_data import city_key
+
+class ClimateService:
+    """
+    Lädt Wochenklima aus CSV und liefert saisonale Temperatur & Wettertexte.
+    """
+    def __init__(self, csv_path: str | None = None) -> None:
+        self.csv_path = csv_path or CLIMATE_CSV_PATH
+        self._data: Dict[str, Dict[int, dict]] = {}
+        self.load()
+
+    @property
+    def data(self) -> Dict[str, Dict[int, dict]]:
+        return self._data
+
+    def load(self) -> None:
+        self._data = {}
+        try:
+            with open(self.csv_path, newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    loc = (row.get("location") or "").strip()
+                    if not loc:
+                        continue
+                    try:
+                        week = int(row.get("week", "0") or 0)
+                        tmax = float((row.get("avg_temp_max_c", "0") or "0").replace(",", "."))
+                        tmin = float((row.get("avg_temp_min_c", "0") or "0").replace(",", "."))
+                        rain = float((row.get("avg_rain_mm_per_day") or "0").replace(",", "."))
+                    except ValueError:
+                        continue
+                    if week <= 0 or week > 53:
+                        continue
+
+                    wdesc_de = (
+                        row.get("weather_description_de")
+                        or row.get("weather_de")
+                        or row.get("wetter_de")
+                        or row.get("weather_description")
+                        or ""
+                    )
+                    wdesc_en = (
+                        row.get("weather_description_en")
+                        or row.get("weather_en")
+                        or row.get("wetter_en")
+                        or ""
+                    )
+
+                    self._data.setdefault(loc, {})[week] = {
+                        "tmax": tmax,
+                        "tmin": tmin,
+                        "rain": rain,
+                        "wdesc_de": wdesc_de.strip(),
+                        "wdesc_en": wdesc_en.strip(),
+                    }
+
+            if not self._data:
+                print("⚠️  climate_weekly.csv geladen, aber keine Daten erkannt.")
+            else:
+                print(f"✅ Klima-Daten geladen – {len(self._data)} Orte")
+        except FileNotFoundError:
+            print(f"⚠️  climate_weekly.csv nicht gefunden unter: {self.csv_path}")
+        except Exception as e:
+            print(f"⚠️  Fehler beim Laden von climate_weekly.csv: {e}")
+
+    @staticmethod
+    def _classify_weather(wdesc: str, rain: float) -> str:
+        wl = (wdesc or "").lower()
+        if any(k in wl for k in ("gewitter", "sturm", "storm", "thunder")):
+            return "Storm"
+        if any(k in wl for k in ("schnee", "snow", "eis", "glätte", "ice")):
+            return "Snow"
+        if any(k in wl for k in ("regen", "regner", "rain", "schauer", "drizzle")):
+            return "Rain"
+        if any(k in wl for k in ("bewölkt", "wolken", "cloud", "overcast")):
+            return "Clouds"
+        if any(k in wl for k in ("sonnig", "heiter", "klar", "sunny", "clear")):
+            return "Clear"
+
+        if rain <= 1.0:
+            return "Clear"
+        elif rain <= 2.5:
+            return "Clouds"
+        else:
+            return "Rain"
+
+    @staticmethod
+    def _simple_en_from_de(wdesc_de: str) -> str:
+        if not wdesc_de:
+            return ""
+        wl = wdesc_de.lower()
+        if "bewölkt" in wl or "wolken" in wl:
+            return "mostly cloudy"
+        if "sonnig" in wl or "heiter" in wl or "klar" in wl:
+            return "mostly sunny"
+        if "regen" in wl or "schauer" in wl:
+            return "rainy / showers"
+        if "schnee" in wl:
+            return "snowy"
+        if "gewitter" in wl or "sturm" in wl:
+            return "storms / thunderstorms"
+        return wdesc_de
+
+    def seasonal_temp_and_condition(
+        self, name: str, checkin: str | None
+    ) -> tuple[float, str, str, str]:
+        loc = city_key(name)
+
+        if checkin:
+            try:
+                ref_date = dt.date.fromisoformat(checkin)
+            except Exception:
+                ref_date = dt.date.today()
+        else:
+            ref_date = dt.date.today()
+        week = ref_date.isocalendar()[1]
+
+        data_loc = self._data.get(loc)
+        entry = None
+        if data_loc:
+            if week in data_loc:
+                entry = data_loc[week]
+            else:
+                weeks = sorted(data_loc.keys())
+                if weeks:
+                    closest = min(weeks, key=lambda w: abs(w - week))
+                    entry = data_loc[closest]
+
+        if entry is not None:
+            tmax = float(entry.get("tmax", 0.0) or 0.0)
+            tmin = float(entry.get("tmin", 0.0) or 0.0)
+            rain = float(entry.get("rain", 0.0) or 0.0)
+            tavg = (tmax + tmin) / 2.0
+
+            wdesc_de = (entry.get("wdesc_de") or "").strip()
+            wdesc_en = (entry.get("wdesc_en") or "").strip()
+            if not wdesc_de and entry.get("wdesc"):
+                wdesc_de = str(entry.get("wdesc")).strip()
+            if not wdesc_en and wdesc_de:
+                wdesc_en = self._simple_en_from_de(wdesc_de)
+
+            cond_cat = self._classify_weather(wdesc_de or wdesc_en, rain)
+            if not wdesc_de:
+                wdesc_de = "Keine Wetterdaten"
+            if not wdesc_en:
+                wdesc_en = wdesc_de
+
+            return float(round(tavg, 1)), cond_cat, wdesc_de, wdesc_en
+
+        # Fallback ohne CSV-Eintrag
+        m = ref_date.month
+        if m in (6, 7, 8):
+            base = 24.0; cond_cat = "Clear"; de = "überwiegend sonnig"; en = "mostly sunny"
+        elif m in (12, 1, 2):
+            base = 5.0; cond_cat = "Clouds"; de = "eher kühl und bewölkt"; en = "rather cool and cloudy"
+        elif m in (4, 5, 9, 10):
+            base = 15.0; cond_cat = "Clouds"; de = "wechselnd bewölkt"; en = "partly cloudy"
+        else:
+            base = 10.0; cond_cat = "Clouds"; de = "gemischt, eher kühl"; en = "mixed, rather cool"
+
+        return float(round(base, 1)), cond_cat, de, en
+
 
