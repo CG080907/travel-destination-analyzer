@@ -1,42 +1,32 @@
-Zielauswahl & Scoring
+Reiseziele entdecken & eingrenzen
 
-As a user, I want to input my travel preferences so I get suitable destination recommendations.
-As a user, I want each destination to have a score that shows how well it matches my preferences.
-As a user, I want to see a sorted list of destinations based on their score.
+As a user, I want to discover suitable travel destinations based on my preferences.
+As a user, I want to compare multiple destinations to decide which one fits me best.
+As a user, I want to understand how well a destination matches my expectations.
 
-Ergebnisübersicht
+Zentrale Informationen über Reiseziele
 
-As a user, I want to see an overview of all matching destinations with key information.
-As a user, I want to see the expected weather for each destination.
-As a user, I want to see the estimated total travel costs for each destination.
+As a user, I want to access key information about each destination.
+As a user, I want to know what weather conditions I can expect during my trip.
+As a user, I want to understand the general costs involved when traveling to a destination.
+As a user, I want to be aware of important safety or travel-related notices.
 
-Kartenansicht
+Aktivitäten & Inhalte vor Ort
 
-As a user, I want to view all destinations on an interactive world map.
-As a user, I want to select a destination by clicking on it on the map.
+As a user, I want to learn about activities, sights, and experiences available at a destination.
+As a user, I want to gain a basic understanding of the cultural aspects of the destination.
 
-KI-Unterstützung
+Orientierung & Visualisierung
 
-As a user, I want to ask an AI questions about a destination.
-As a user, I want the AI to give me additional destination recommendations.
+As a user, I want to know where a destination is located geographically.
+As a user, I want an intuitive way to explore and navigate through different destinations.
 
-Detailseite
+Unterstützung bei der Entscheidungsfindung
 
-As a user, I want to see detailed information about a destination.
-As a user, I want to see activities, tours, and sights available at the destination.
-As a user, I want to access photos and external resources about the destination.
-As a user, I want to see seasonal and weather-specific information for the destination.
-As a user, I want to see a full price breakdown including travel, accommodation, and local costs.
-As a user, I want to see travel warnings for my destination.
-As a user, I want to be linked to official travel advisories.
+As a user, I want enough information to make a confident and well-informed travel decision.
+As a user, I want help identifying destinations that fit within my budget.
 
-Budget & Preisfunktionen
+Effizienz & Komfort
 
-As a user, I want the system to automatically calculate the total travel costs.
-As a user, I want to use a currency converter for destinations outside the Eurozone.
-As a user, I want to compare all price-related factors between destinations.
-
-Allgemeiner Mehrwert
-
-As a user, I want all travel-relevant information (map, prices, weather, activities) in one dashboard.
-As a user, I want to quickly compare multiple destinations side by side.
+As a user, I want the planning process to be simplified and less time-consuming.
+As a user, I want relevant travel information to be accessible in one place.
