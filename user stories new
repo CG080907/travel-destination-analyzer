@@ -1,10 +1,42 @@
-As a user, I want to reach my destination as cheap as possible in dependance of means of transports (by car, bus, train, plane...).
-As a user, I want to see the ranking of the hotel.
-As a user, I want to have a hotel, hostel, house...
+Zielauswahl & Scoring
+
+As a user, I want to input my travel preferences so I get suitable destination recommendations.
+As a user, I want each destination to have a score that shows how well it matches my preferences.
+As a user, I want to see a sorted list of destinations based on their score.
+
+Ergebnisübersicht
+
+As a user, I want to see an overview of all matching destinations with key information.
+As a user, I want to see the expected weather for each destination.
+As a user, I want to see the estimated total travel costs for each destination.
+
+Kartenansicht
+
+As a user, I want to view all destinations on an interactive world map.
+As a user, I want to select a destination by clicking on it on the map.
+
+KI-Unterstützung
+
+As a user, I want to ask an AI questions about a destination.
+As a user, I want the AI to give me additional destination recommendations.
+
+Detailseite
+
+As a user, I want to see detailed information about a destination.
+As a user, I want to see activities, tours, and sights available at the destination.
+As a user, I want to access photos and external resources about the destination.
+As a user, I want to see seasonal and weather-specific information for the destination.
+As a user, I want to see a full price breakdown including travel, accommodation, and local costs.
 As a user, I want to see travel warnings for my destination.
-As a user, I want to see what kinds of documents I need to travel to the destination.
-As a user, I want to see the currency used in the country.
-As a user, I want to experience the culture.
-As a user, I want to sehenswürdigkeiten
-As a user, I want to see my travel time.
-As a user, I want to select the starting point of my journey.
+As a user, I want to be linked to official travel advisories.
+
+Budget & Preisfunktionen
+
+As a user, I want the system to automatically calculate the total travel costs.
+As a user, I want to use a currency converter for destinations outside the Eurozone.
+As a user, I want to compare all price-related factors between destinations.
+
+Allgemeiner Mehrwert
+
+As a user, I want all travel-relevant information (map, prices, weather, activities) in one dashboard.
+As a user, I want to quickly compare multiple destinations side by side.
